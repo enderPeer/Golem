@@ -112,6 +112,48 @@ class SemanticTrainingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'meaning_id'):
             training.encode_samples(data, 'train', training._config(config()))
 
+    def test_long_run_defers_test_completely(self):
+        cfg = {**config(), 'strategies': ['ordinary'], 'evaluate_test_on_complete': False}
+        data = dataset()
+        data['samples']['test'] = []  # Preparing/evaluating this would fail.
+        splits = []
+        def record(model, data, split, config, should_stop):
+            splits.append(split)
+            return rollout(model, data, split, config, should_stop)
+        with tempfile.TemporaryDirectory() as directory, patch.object(training, '_rollout', side_effect=record):
+            result = training.train_semantic(cfg, data, directory)
+            self.assertEqual(result['status'], 'complete')
+            self.assertEqual(splits, ['validation'] * 8)
+            self.assertIsNone(result['strategies']['ordinary']['test'])
+            self.assertIn('deferred', result['test_policy'])
+            artifact = torch.load(Path(directory) / 'best.pt', weights_only=True)
+            self.assertEqual(artifact['metadata']['validation_protocol_hash'], result['validation_protocol_hash'])
+
+    def test_frozen_validation_protocol_ignores_training_seed_and_train_overlay(self):
+        a = dataset()
+        b = dataset()
+        b['samples']['train'].append(dict(b['samples']['train'][0], id='new-training-repair'))
+        fixed = {'validation_seed': 17, 'validation_nll_seed': 23, 'validation_batch_size': 2}
+        ca = training._config({**config(), **fixed, 'seed': 1, 'batch_size': 2})
+        cb = training._config({**config(), **fixed, 'seed': 9, 'batch_size': 8})
+        self.assertEqual(training._validation_protocol(a, ca), training._validation_protocol(b, cb))
+        b['samples']['validation'][0]['reply'] = 'Changed held-out answer.'
+        self.assertNotEqual(training._validation_protocol(a, ca)[1], training._validation_protocol(b, cb)[1])
+
+    def test_legacy_resume_defaults_remain_compatible(self):
+        cfg = {**config(), 'strategies': ['ordinary']}
+        with tempfile.TemporaryDirectory() as directory, patch.object(training, '_rollout', side_effect=rollout):
+            training.train_semantic(cfg, dataset(), directory)
+            path = Path(directory) / 'semantic-training.pt'
+            state = torch.load(path, weights_only=True)
+            for key in ('evaluate_test_on_complete', 'validation_seed', 'validation_nll_seed', 'validation_batch_size'):
+                state['config'].pop(key)
+            state.pop('validation_protocol')
+            state.pop('validation_protocol_hash')
+            torch.save(state, path)
+            result = training.train_semantic(cfg, dataset(), directory, resume=True)
+            self.assertEqual(result['status'], 'complete')
+
 
 if __name__ == '__main__':
     unittest.main()

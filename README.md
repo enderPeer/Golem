@@ -12,6 +12,8 @@ The [dictionary relation graph](docs/relations.md) adds WordNet meanings, typed 
 
 The [chat-evolution experiment](docs/chat-evolution.md) trains original short conversations with ordinary, independent and genetic controls. It adds held-out paraphrase families, context-use checks and bounded cluster workers. The initial language checkpoint scored 0.0 on the 56-case chat validation diagnostic; final results for this new stage are pending. Live replies come from a saved neural checkpoint, not an answer lookup.
 
+The newer [conversation-world experiment](docs/conversation-world.md) targets false-name claims, irrelevant replies and multi-turn error recovery. It combines a learned 18-class meaning head with explicit USER-only fact preprocessing and evaluates actual generated histories. The final allocation is **32 islands /160 model slots**, with the extended run planned through **12 October 2026, 10:00 CEST**; no final quality result is claimed yet.
+
 ## Run without installing anything
 
 Python 3.11 or newer is sufficient; the CPU implementation has no third-party runtime dependencies.

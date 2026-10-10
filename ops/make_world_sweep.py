@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ops.make_chat_sweep import ALLOCATIONS, toml_text
 
 
-def make_world_sweep(output):
+def make_world_sweep(output, deadline=None):
     root = Path(__file__).resolve().parents[1]
     output = Path(output)
     if output.exists():
@@ -18,7 +18,8 @@ def make_world_sweep(output):
     jobs = []
     serial = 0
     for host, allocation in ALLOCATIONS.items():
-        workers = [('cpu', None, i) for i in range(allocation['cpu_jobs'])]
+        cpu_jobs = 3 if deadline and host == 'falke64' else allocation['cpu_jobs']
+        workers = [('cpu', None, i) for i in range(cpu_jobs)]
         workers += [('gpu', device, i) for device in allocation['gpu_ids'] for i in range(2)]
         for kind, physical, index in workers:
             identity = f'{host}-world-cpu-{index}' if kind == 'cpu' else f'{host}-world-gpu{physical}-{index}'
@@ -33,6 +34,10 @@ def make_world_sweep(output):
                 max_total_updates=1600 if kind == 'cpu' else 800,
                 init_checkpoint='runs/seeds/world-' + ('chat' if serial % 2 else 'language') + '-base.pt')
             cfg['model']['dropout'] = cfg['dropout']
+            if deadline:
+                cfg['evaluate_test_on_complete'] = False
+                if host == 'falke64' and kind == 'cpu':
+                    cfg['threads'] = 3
             if serial % 2:
                 cfg['strategies'] = ['evolution', 'ordinary']
             folder = output / host
@@ -43,9 +48,10 @@ def make_world_sweep(output):
                 raise ValueError('World config serialization mismatch')
             jobs.append({'id': identity, 'host': host, 'root': allocation['root'], 'kind': kind,
                 'physical_gpu': physical, 'python': allocation[kind + '_python'], 'threads': cfg['threads'],
-                'memory_mib': allocation['cpu_memory_mib'] if kind == 'cpu' else 3072,
+                'memory_mib': allocation['cpu_memory_mib'] if kind == 'cpu' else (4096 if deadline else 3072),
                 'minimum_free_gib': 2 if allocation['root'].startswith('/tmp/') else 50,
-                'config': 'runs/world-configs/' + identity + '.toml', 'run_dir': 'runs/world-sweep/' + identity,
+                'config': 'runs/world-long-configs/' + identity + '.toml' if deadline else 'runs/world-configs/' + identity + '.toml',
+                'run_dir': ('runs/world-long/' if deadline else 'runs/world-sweep/') + identity,
                 'local_config': str(path.resolve()), 'seed': cfg['seed']})
             serial += 1
     result = {'schema': 'golem-semantic-world-sweep-v1', 'jobs': jobs,
@@ -53,6 +59,9 @@ def make_world_sweep(output):
         'learning': 'Joint request-meaning and final-reply losses, verified USER-only memory, free generated rollout selection.',
         'budgets': 'Equal optimizer updates per strategy within an island; token lengths and hardware costs can differ.',
         'allocation_note': 'Inherited explicit host limits, rechecked idle on 2026-10-11 Europe/Berlin; occupied GPUs excluded.'}
+    if deadline:
+        result.update(deadline_utc=deadline, mode='supervised_until_deadline',
+                      resource_note='GPU host memory measured up to 2.93 GiB during probes; allow 4 GiB per GPU worker. Falke uses three 3-thread CPU islands to fit memory headroom.')
     (output / 'manifest.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     return result
 
@@ -60,6 +69,7 @@ def make_world_sweep(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--deadline', help='Explicit UTC deadline enables bounded continuous stages')
     args = parser.parse_args()
-    result = make_world_sweep(args.output)
+    result = make_world_sweep(args.output, args.deadline)
     print(json.dumps({'world_experiments': len(result['jobs']), 'output': args.output}))
