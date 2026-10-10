@@ -31,11 +31,18 @@ def contained(root, raw, *, must_exist=False):
     return candidate
 
 
-def validate(root, config, data, run_dir):
+def validate(root, config, data, run_dir, resume=False):
     config_path = contained(root, config, must_exist=True)
     data_path = contained(root, data, must_exist=True)
     run_path = contained(root, run_dir)
-    if run_path.exists():
+    if resume:
+        if not run_path.is_dir():
+            raise ValueError(f"Resume requires an existing run directory: {run_path}")
+        checkpoint = run_path / "checkpoint.json"
+        contained(root, checkpoint, must_exist=True)
+        if checkpoint.is_symlink():
+            raise ValueError(f"Resume checkpoint must be a regular file, not a symlink: {checkpoint}")
+    elif run_path.exists():
         if not run_path.is_dir() or any(run_path.iterdir()):
             raise ValueError(f"Run directory must be new or empty: {run_path}")
     return config_path, data_path, run_path
@@ -109,13 +116,15 @@ def stop_worker(child):
         child.wait()
 
 
-def run_worker(root, config, data, run_dir):
+def run_worker(root, config, data, run_dir, resume=False):
     if os.name != "posix":
         raise RuntimeError("The guarded deployment worker requires Linux/POSIX")
-    config_path, data_path, run_path = validate(root, config, data, run_dir)
+    config_path, data_path, run_path = validate(root, config, data, run_dir, resume=resume)
     preflight(root)
     command = [sys.executable, "-m", "english_world", "evolve", "--config", str(config_path),
                "--data", str(data_path), "--run-dir", str(run_path)]
+    if resume:
+        command.append("--resume")
     child = subprocess.Popen(command, cwd=root, start_new_session=True)
     previous_handlers = {}
 
@@ -147,17 +156,22 @@ def main():
     parser.add_argument("--config")
     parser.add_argument("--data")
     parser.add_argument("--run-dir")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume a contained run with a regular checkpoint.json file")
     args = parser.parse_args()
     try:
         if args.preflight:
+            if args.resume:
+                parser.error("--resume is only valid with --validate or --run")
             preflight(Path(args.preflight).resolve(strict=True))
         elif args.validate:
             root, config, data, run_dir = args.validate
-            validate(Path(root).resolve(strict=True), config, data, run_dir)
+            validate(Path(root).resolve(strict=True), config, data, run_dir, resume=args.resume)
         else:
             if not all((args.config, args.data, args.run_dir)):
                 parser.error("--run requires --config, --data and --run-dir")
-            return run_worker(Path(args.run).resolve(strict=True), args.config, args.data, args.run_dir)
+            return run_worker(Path(args.run).resolve(strict=True), args.config, args.data, args.run_dir,
+                              resume=args.resume)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Worker guard: {exc}", file=sys.stderr)
         return 1

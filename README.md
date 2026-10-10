@@ -82,6 +82,8 @@ Dataset preparation records sources, revisions, digests, normalization, splits, 
 
 The initial implementation uses CPU execution. A Vulkan implementation is a future optimization gated on a measured bottleneck and reference-equivalence tests; no GPU training support is claimed in this version.
 
+A continued English experiment can use `configs/language-hour.toml` and `ops/run_language_hour.sh`. It resumes a checkpoint already placed in `runs/language-1h`, trains for one additional hour, and reports session elapsed/remaining time separately from cumulative training time. Its model settings match the initial English pilot. The supervisor allows a final minute for checkpoint shutdown and retains the CPU, memory and disk limits.
+
 ## Tests
 
 ```bash

@@ -193,6 +193,7 @@ class Trainer:
         pending = self.state.get('pending') or {}
         latest = self.state['history'][-1] if self.state['history'] else None
         champion = self.state.get('champion')
+        session_elapsed = time.monotonic() - self.started
         status = {'schema': SCHEMA, 'status': self.state['status'], 'generation': self.state['generation'],
                   'target_generations': self.config['generations'], 'stage': self.state['stage'],
                   'evaluated_parents': pending.get('eval_cursor', 0),
@@ -202,6 +203,9 @@ class Trainer:
                   'guided_events': self.state['guided_events'], 'unguided_events': self.state['unguided_events'],
                   'bytes_copied': self.state['bytes_copied'],
                   'elapsed_seconds': self.elapsed_before + time.monotonic() - self.started,
+                  'session_elapsed_seconds': session_elapsed,
+                  'session_budget_seconds': self.config['max_seconds'],
+                  'session_remaining_seconds': max(0., self.config['max_seconds'] - session_elapsed) if self.config['max_seconds'] else None,
                   'latest': latest, 'champion_metrics': champion['metrics'] if champion else None}
         if self.config['domain'] == 'code':
             status.update(domain='code', source_manifest=_source_summary(self.data),

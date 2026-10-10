@@ -1,0 +1,14 @@
+# Continue the existing English experiment for one additional wall-clock hour.
+# Semantic settings match the original pilot so checkpoint resume is exact.
+domain = "english"
+population_size = 64
+generations = 1000000
+seed = 7
+max_order = 5
+max_contexts = 512
+mutation_rate = 0.8
+guided_probability = 0.7
+eval_examples = 256
+checkpoint_every = 100
+checkpoint_seconds = 60
+max_seconds = 3600
