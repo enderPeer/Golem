@@ -15,6 +15,7 @@ import json
 import random
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import urllib.error
@@ -23,6 +24,12 @@ from pathlib import Path
 from typing import Any
 
 ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789 .,!?:;\"'()-\n"
+CODE_ALPHABET = "".join(chr(value) for value in range(32, 127)) + "\n\t"
+SELF_CODE_FILES = (
+    "english_world/__init__.py", "english_world/__main__.py",
+    "english_world/model.py", "english_world/evolution.py", "english_world/data.py",
+    "english_world/cli.py", "ops/worker_guard.py",
+)
 SCHEMA_VERSION = 1
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "original_english.json"
 TINY_REVISION = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"
@@ -45,6 +52,163 @@ def normalize_text(text: str) -> str:
     }))
     text = "".join(char if char in ALPHABET else " " for char in text)
     return "\n".join(re.sub(r" +", " ", line).strip() for line in text.splitlines()).strip()
+
+
+def normalize_code(text: str) -> str:
+    """Preserve source case and indentation; escape unsupported characters."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.encode("ascii", "backslashreplace").decode("ascii")
+    return "".join(char if char in CODE_ALPHABET else f"\\x{ord(char):02x}" for char in text)
+
+
+def _source_identity(records: list[dict[str, Any]]) -> str:
+    identity = [{"path": record["path"], "sha256": record["sha256"]}
+                for record in sorted(records, key=lambda record: record["path"])]
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _git_source_metadata(project_root: Path) -> tuple[set[str], str | None, bool]:
+    """Read only tracked-path metadata for the fixed project-source allowlist."""
+    try:
+        tracked = subprocess.run(["git", "-C", str(project_root), "ls-files", "-z", "--", *SELF_CODE_FILES],
+                                 check=True, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("self-code requires a Git checkout with tracked project Python files") from error
+    paths = set(tracked.stdout.decode("utf-8").split("\0")) - {""}
+    revision = subprocess.run(["git", "-C", str(project_root), "rev-parse", "--verify", "HEAD"],
+                              capture_output=True, text=True, timeout=10)
+    commit = revision.stdout.strip() if revision.returncode == 0 else None
+    if commit is not None and not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+        raise ValueError("Unexpected Git commit identifier")
+    status = subprocess.run(["git", "-C", str(project_root), "diff", "--quiet", "HEAD", "--", *SELF_CODE_FILES],
+                            capture_output=True, timeout=10)
+    return paths, commit, status.returncode == 0
+
+
+def _safe_source_path(root: Path, relative: str) -> Path:
+    if relative not in SELF_CODE_FILES:
+        raise ValueError(f"Source path is outside the fixed project allowlist: {relative}")
+    candidate = root / relative
+    if candidate.is_symlink() or not candidate.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"Source path escapes the project or is a symbolic link: {relative}")
+    return candidate
+
+
+def _verify_code_snapshot(output: Path, dataset: dict[str, Any]) -> None:
+    """Validate saved bytes without inspecting a changing live checkout."""
+    manifest = dataset.get("manifest", {})
+    records = manifest.get("source_files")
+    if manifest.get("source") != "self-code" or manifest.get("domain") != "code" or not isinstance(records, list):
+        raise ValueError("Code dataset is missing its source snapshot manifest")
+    if not records or len({record.get("path") for record in records}) != len(records):
+        raise ValueError("Invalid or duplicate snapshot source paths")
+    if _source_identity(records) != manifest.get("source_sha256"):
+        raise ValueError("Source snapshot manifest identity mismatch")
+    texts_by_split: dict[str, set[str]] = {split: set() for split in ("train", "validation", "test")}
+    snapshot = output / "source_snapshot"
+    for record in records:
+        relative = record["path"]
+        if record.get("snapshot_path") != "source_snapshot/" + relative:
+            raise ValueError("Invalid source snapshot path")
+        path = _safe_source_path(snapshot, relative)
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != record.get("sha256") or len(raw) != record.get("bytes"):
+            raise ValueError(f"Source snapshot checksum mismatch: {relative}")
+        text = normalize_code(raw.decode("utf-8-sig"))
+        if hashlib.sha256(text.encode()).hexdigest() != record.get("normalized_sha256"):
+            raise ValueError(f"Normalized source snapshot checksum mismatch: {relative}")
+        split = record.get("split")
+        if split not in texts_by_split:
+            raise ValueError("Invalid source split")
+        texts_by_split[split].add(text)
+    for split, texts in texts_by_split.items():
+        if not texts or texts != set(dataset.get("texts", {}).get(split, [])):
+            raise ValueError(f"Snapshot text does not match the {split} split")
+        if any(texts & other for name, other in texts_by_split.items() if name != split):
+            raise ValueError("Identical source text appears in different splits")
+    manifest_path = output / "manifest.json"
+    if not manifest_path.is_file() or json.loads(manifest_path.read_text(encoding="utf-8")) != manifest:
+        raise ValueError("Saved manifest differs from the dataset manifest")
+
+
+def _prepare_self_code(output: Path, *, seed: int, max_examples: int, context_length: int,
+                       project_root: Path) -> Path:
+    path = output / "dataset.json"
+    if path.exists():
+        saved = load_dataset(path)
+        expected = {"source": "self-code", "seed": seed, "max_examples": max_examples,
+                    "context_length": context_length}
+        if any(saved.get("manifest", {}).get(key) != value for key, value in expected.items()):
+            raise ValueError("Existing dataset has different settings; choose a new output directory for a new snapshot")
+        return path
+    tracked, commit, matches_commit = _git_source_metadata(project_root)
+    raw_files: dict[str, bytes] = {}
+    normalized: dict[str, str] = {}
+    omitted = []
+    for relative in SELF_CODE_FILES:
+        if relative not in tracked:
+            continue
+        source = _safe_source_path(project_root, relative)
+        if not source.is_file():
+            raise ValueError(f"Tracked project source file is missing: {relative}")
+        if source.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError(f"Project source exceeds the 4 MiB per-file limit: {relative}")
+        raw = source.read_bytes()
+        text = normalize_code(raw.decode("utf-8-sig"))
+        if len(text) < 100:
+            omitted.append({"path": relative, "reason": "source stub shorter than 100 normalized characters"})
+            continue
+        raw_files[relative] = raw
+        normalized[relative] = text
+    groups: dict[str, list[str]] = {}
+    for relative, text in normalized.items():
+        groups.setdefault(text, []).append(relative)
+    if len(groups) < 5:
+        raise ValueError("self-code requires at least five distinct tracked allowlisted source files of 100 characters")
+    remaining = sorted(groups, key=lambda text: min(groups[text]))
+    random.Random(seed).shuffle(remaining)
+    selected = {}
+    for split, preferred in (("validation", "english_world/cli.py"), ("test", "ops/worker_guard.py")):
+        text = next((text for text in remaining if preferred in groups[text]), remaining[0])
+        selected[split] = [text]
+        remaining.remove(text)
+    texts = {"train": remaining, "validation": selected["validation"], "test": selected["test"]}
+    assigned = {relative: split for split, docs in texts.items() for text in docs for relative in groups[text]}
+    records = [{"path": relative, "sha256": hashlib.sha256(raw_files[relative]).hexdigest(),
+                "normalized_sha256": hashlib.sha256(normalized[relative].encode()).hexdigest(),
+                "split": assigned[relative], "snapshot_path": "source_snapshot/" + relative,
+                "bytes": len(raw_files[relative])} for relative in sorted(raw_files)]
+    examples = {split: _examples(docs, max_examples if split == "train" else max(64, max_examples // 4),
+                                 context_length, f"{seed}:{split}") for split, docs in texts.items()}
+    manifest = {"source": "self-code", "domain": "code", "seed": seed, "max_examples": max_examples,
+                "context_length": context_length, "source_commit": commit, "source_matches_commit": matches_commit,
+                "source_sha256": _source_identity(records), "source_files": records, "omitted_files": omitted,
+                "source_allowlist": list(SELF_CODE_FILES),
+                "normalization": "UTF-8 source, BOM removed; CRLF/CR to LF; case, spaces, indentation and tabs preserved; non-ASCII/control characters escaped",
+                "split_policy": "whole files; normalized exact duplicates grouped; cli.py validation and worker_guard.py test when available; remaining files train",
+                "evaluation_policy": "test source files and examples are not for evolutionary selection; snapshot bytes never change during a run",
+                "dictionary": {"name": "none (code domain)", "word_count": 0, "spelling_authority": False},
+                "provenance": [{"name": "allowlisted tracked project Python source snapshot", "license": "project license",
+                                "source_commit": commit, "source_sha256": _source_identity(records)}],
+                "warnings": ["Source prediction is not evidence of executable code improvements or self-editing."]}
+    manifest["splits"] = {split: {"documents": len(docs), "characters": sum(map(len, docs)),
+                                  "examples": len(examples[split]),
+                                  "source_paths": sorted(relative for relative, assigned_split in assigned.items() if assigned_split == split),
+                                  "document_sha256": [hashlib.sha256(doc.encode()).hexdigest() for doc in docs]}
+                           for split, docs in texts.items()}
+    dataset = {"schema_version": SCHEMA_VERSION, "domain": "code", "alphabet": CODE_ALPHABET,
+               **examples, "dictionary": [], "texts": texts, "manifest": manifest}
+    # Write precisely the bytes that were hashed above, not another read of files
+    # which might have changed while preparation was running.
+    output.mkdir(parents=True, exist_ok=True)
+    for record in records:
+        destination = _safe_source_path(output / "source_snapshot", record["path"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw_files[record["path"]])
+    _atomic_json(output / "manifest.json", manifest)
+    _atomic_json(path, dataset)
+    _verify_code_snapshot(output, dataset)
+    return path
 
 
 def _sha256(path: Path) -> str:
@@ -187,7 +351,8 @@ def _read_scowl(archive: Path) -> tuple[list[str], str, list[str]]:
 def prepare_dataset(output_dir: str | Path, source: str = "fixture", *, seed: int = 1,
                     max_examples: int = 8192, context_length: int = 128,
                     cache_dir: str | Path | None = None, max_download_bytes: int = 64 * 1024 * 1024,
-                    max_documents: int = 2048, allow_dictionary_fallback: bool = True) -> Path:
+                    max_documents: int = 2048, allow_dictionary_fallback: bool = True,
+                    project_root: str | Path | None = None) -> Path:
     """Create dataset.json and return its path; identical inputs are deterministic.
 
     ``max_examples`` caps training examples. Validation and test each receive
@@ -196,8 +361,14 @@ def prepare_dataset(output_dir: str | Path, source: str = "fixture", *, seed: in
     Download or checksum failures in TinyStories are fatal. SCOWL unavailability
     may explicitly fall back to a training-only vocabulary, never held-out text.
     """
-    if source not in {"fixture", "english"}:
-        raise ValueError("source must be 'fixture' or 'english'")
+    if source not in {"fixture", "english", "self-code"}:
+        raise ValueError("source must be 'fixture', 'english' or 'self-code'")
+    if source == "self-code":
+        if max_examples < 1 or context_length < 1:
+            raise ValueError("max_examples and context_length must be positive")
+        root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
+        return _prepare_self_code(Path(output_dir), seed=seed, max_examples=max_examples,
+                                  context_length=context_length, project_root=root.resolve())
     if max_examples < 1 or context_length < 1 or max_documents < 6:
         raise ValueError("max_examples/context_length must be positive; max_documents must be >= 6")
     output = Path(output_dir)
@@ -281,8 +452,12 @@ def load_dataset(path: str | Path) -> dict[str, Any]:
     result = json.loads(path.read_text(encoding="utf-8"))
     if result.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("Unsupported dataset schema version")
-    if result.get("alphabet") != ALPHABET:
-        raise ValueError("Dataset alphabet differs from the English world alphabet")
+    domain = result.get("domain", "english")
+    if domain not in {"english", "code"}:
+        raise ValueError("Unsupported dataset domain")
+    alphabet = CODE_ALPHABET if domain == "code" else ALPHABET
+    if result.get("alphabet") != alphabet:
+        raise ValueError("Dataset alphabet differs from its domain alphabet")
     for split in ("train", "validation", "test"):
         if not result.get(split):
             raise ValueError(f"Missing or empty {split} examples")
@@ -290,12 +465,16 @@ def load_dataset(path: str | Path) -> dict[str, Any]:
             if not isinstance(example, dict) or not isinstance(example.get("context"), str):
                 raise ValueError(f"Invalid {split} example")
             target = example.get("target")
-            if not isinstance(target, str) or len(target) != 1 or target not in ALPHABET:
+            if not isinstance(target, str) or len(target) != 1 or target not in alphabet:
                 raise ValueError(f"Invalid target in {split}")
-            if not example["context"] or any(char not in ALPHABET for char in example["context"]):
+            if not example["context"] or any(char not in alphabet for char in example["context"]):
                 raise ValueError(f"Invalid context in {split}")
-    if not isinstance(result.get("dictionary"), list) or not result["dictionary"]:
+    if not isinstance(result.get("dictionary"), list) or (domain == "english" and not result["dictionary"]):
         raise ValueError("Missing dictionary")
+    if domain == "code":
+        if result["dictionary"]:
+            raise ValueError("Code datasets must not contain a spelling dictionary")
+        _verify_code_snapshot(path.parent, result)
     if any(not isinstance(word, str) or WORD_RE.fullmatch(word) is None for word in result["dictionary"]):
         raise ValueError("Invalid dictionary entry")
     return result
@@ -303,7 +482,7 @@ def load_dataset(path: str | Path) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("fixture", "english"), default="fixture")
+    parser.add_argument("--source", choices=("fixture", "english", "self-code"), default="fixture")
     parser.add_argument("--output", default="data/fixture")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--max-examples", type=int, default=8192)

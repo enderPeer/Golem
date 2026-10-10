@@ -1,0 +1,16 @@
+# Predict a pinned snapshot of Golem source files. Never execute generated code.
+domain = "code"
+population_size = 64
+generations = 1000
+seed = 19
+max_order = 8
+max_contexts = 1024
+mutation_rate = 0.9
+guided_probability = 0.8
+mutation_events = 8
+eval_examples = 256
+validation_examples = 1024
+generated_chars = 64
+checkpoint_every = 25
+checkpoint_seconds = 60
+max_seconds = 1740

@@ -18,14 +18,15 @@ import signal
 import threading
 import time
 
-from .model import Genome, evaluate, reproduce, FORMAT
+from .model import Genome, evaluate, reproduce
 
 DEFAULTS = {'population_size': 64, 'generations': 300, 'seed': 1, 'max_order': 5,
             'max_contexts': 512, 'mutation_rate': .95, 'guided_probability': .7,
             'mutation_events': 4, 'eval_examples': 256, 'validation_examples': 512,
             'tournament_size': 4, 'elite_count': 2, 'checkpoint_every': 1,
             'checkpoint_seconds': 60., 'max_seconds': 1800., 'generated_chars': 48,
-            'energy_base': 8192., 'energy_reward_scale': 16384., 'selection': 'tournament'}
+            'energy_base': 8192., 'energy_reward_scale': 16384., 'selection': 'tournament',
+            'domain': 'english'}
 SCHEMA = 'english-world-training-v1'
 
 
@@ -50,13 +51,37 @@ def _fingerprint(data: dict) -> str:
     fields = {k: data.get(k, []) for k in ('train', 'validation', 'test', 'dictionary')}
     if isinstance(fields['dictionary'], (set, frozenset)):
         fields['dictionary'] = sorted(fields['dictionary'])
+    # Preserve the exact English-v1 digest so existing pilots can still resume.
+    # Code datasets additionally identify their alphabet semantics and frozen
+    # source snapshot, even if a source edit did not change sampled examples.
+    if data.get('domain', 'english') == 'code':
+        manifest = data.get('manifest', {})
+        fields['domain'] = 'code'
+        fields['alphabet'] = data.get('alphabet')
+        fields['source_identity'] = {
+            'source_sha256': manifest.get('source_sha256'),
+            'files': [{key: record.get(key) for key in
+                       ('path', 'sha256', 'normalized_sha256', 'split')}
+                      for record in manifest.get('source_files', [])],
+        }
     return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=True,
                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def _source_summary(data: dict) -> dict:
+    """Small provenance for status; no source contents or local absolute paths."""
+    manifest = data.get('manifest', {})
+    return {'source': manifest.get('source'), 'source_commit': manifest.get('source_commit'),
+            'source_sha256': manifest.get('source_sha256'),
+            'files': [{key: record.get(key) for key in ('path', 'sha256', 'split')}
+                      for record in manifest.get('source_files', [])]}
 
 
 def _configuration(config: dict) -> dict:
     c = dict(DEFAULTS)
     c.update(config)
+    if c['domain'] not in ('english', 'code'):
+        raise ValueError('domain must be english or code')
     # Accept convenient CLI aliases without allowing them to change semantics.
     if 'population' in config and 'population_size' not in config:
         c['population_size'] = config['population']
@@ -79,7 +104,7 @@ def _configuration(config: dict) -> dict:
             raise ValueError(f'{key} must be finite')
     if not 2 <= c['population_size'] <= 4096 or not 0 <= c['generations']:
         raise ValueError('population must be 2..4096 and generations nonnegative')
-    if not 1 <= c['max_order'] <= 5 or not 1 <= c['max_contexts'] <= 4096:
+    if not 1 <= c['max_order'] <= (16 if c['domain'] == 'code' else 5) or not 1 <= c['max_contexts'] <= 4096:
         raise ValueError('invalid genome size bounds')
     if not 0 <= c['elite_count'] < c['population_size']:
         raise ValueError('elite_count must be smaller than population')
@@ -100,6 +125,8 @@ class Trainer:
     def __init__(self, config: dict, data: dict, run_dir: str | Path, resume: bool = False):
         self.config = _configuration(config)
         self.data = data
+        if data.get('domain', 'english') != self.config['domain']:
+            raise ValueError('dataset domain and configured domain must match')
         if not data.get('train') or not data.get('validation'):
             raise ValueError('nonempty train and validation splits are required')
         self.run_dir = Path(run_dir)
@@ -124,12 +151,14 @@ class Trainer:
                 raise ValueError('checkpoint schema or dataset fingerprint mismatch')
             allowed_changes = {'generations', 'max_seconds', 'checkpoint_seconds', 'checkpoint_every'}
             for key in DEFAULTS:
-                if key not in allowed_changes and self.state['config'].get(key) != self.config[key]:
+                previous = self.state['config'].get(key, 'english' if key == 'domain' else None)
+                if key not in allowed_changes and previous != self.config[key]:
                     raise ValueError(f'cannot change {key} while resuming')
             self.rng.setstate(_tuple_state(self.state['rng_state']))
             self.elapsed_before = self.state.get('elapsed_seconds', 0.)
             self.state['config'] = self.config
             self.state['status'] = 'running'
+            self.state.pop('error', None)
             self._write_history(rewrite=True)
         else:
             if checkpoint.exists():
@@ -137,10 +166,10 @@ class Trainer:
             population = []
             for i in range(self.config['population_size']):
                 genome = Genome(max_order=self.rng.randint(1, self.config['max_order']),
-                                max_contexts=self.config['max_contexts'])
+                                max_contexts=self.config['max_contexts'], domain=self.config['domain'])
                 population.append({'id': i, 'parent_id': None, 'generation_born': 0,
                                    'genome': genome.to_dict(), 'energy': 0., 'metrics': None})
-            self.state = {'schema': SCHEMA, 'genome_schema': FORMAT, 'config': self.config,
+            self.state = {'schema': SCHEMA, 'genome_schema': population[0]['genome']['format'], 'config': self.config,
                           'data_fingerprint': self.fingerprint, 'generation': 0, 'stage': 'start',
                           'population': population, 'next_id': len(population), 'pending': None,
                           'history': [], 'ancestry': [], 'champion': None, 'baseline': None,
@@ -174,6 +203,13 @@ class Trainer:
                   'bytes_copied': self.state['bytes_copied'],
                   'elapsed_seconds': self.elapsed_before + time.monotonic() - self.started,
                   'latest': latest, 'champion_metrics': champion['metrics'] if champion else None}
+        if self.config['domain'] == 'code':
+            status.update(domain='code', source_manifest=_source_summary(self.data),
+                          champion_self_prediction=champion.get('self_prediction') if champion else None,
+                          validation_loss_improvement=(self.state['baseline']['loss'] - champion['metrics']['loss']
+                                                       if champion and self.state['baseline'] else None))
+        if self.state.get('error'):
+            status['error'] = self.state['error']
         _atomic_json(self.run_dir / 'status.json', status)
 
     def _write_history(self, rewrite=False):
@@ -192,7 +228,13 @@ class Trainer:
             self.history_cursors[name] = len(records)
 
     def _evaluate(self, genome: Genome, examples: list[dict]) -> dict:
-        return evaluate(genome, examples, self.dictionary, generated_chars=self.config['generated_chars'])
+        metrics = evaluate(genome, examples, self.dictionary, generated_chars=self.config['generated_chars'])
+        if self.config['domain'] == 'english':
+            # Domain metadata is new; do not change historical English metrics,
+            # checkpoint comparisons or selection trajectories during migration.
+            metrics.pop('domain', None)
+            metrics.pop('alphabet_size', None)
+        return metrics
 
     def _start_generation(self):
         count = min(self.config['eval_examples'], len(self.data['train']))
@@ -219,7 +261,7 @@ class Trainer:
                 pending['eval_cursor'] += 1
                 return
             if state['baseline'] is None:
-                state['baseline'] = self._evaluate(Genome(), self.validation)
+                state['baseline'] = self._evaluate(Genome(domain=c['domain']), self.validation)
             state['stage'] = 'reproduce'
             return
         if state['stage'] == 'reproduce':
@@ -256,7 +298,8 @@ class Trainer:
                     pending['generation_' + ('guided' if key == 'guided_events' else 'unguided')] += replication[key]
             else:
                 # Explicit resource-starvation inflow, never an implicit learned model.
-                child_genome = Genome(max_order=self.rng.randint(1, c['max_order']), max_contexts=c['max_contexts'])
+                child_genome = Genome(max_order=self.rng.randint(1, c['max_order']),
+                                      max_contexts=c['max_contexts'], domain=c['domain'])
                 parent_id = parent_hash = None
                 state['inflow_founders'] += 1
             individual = {'id': state['next_id'], 'parent_id': parent_id,
@@ -281,6 +324,14 @@ class Trainer:
                      'individual_id': best['id'], 'metrics': validation, 'evaluation_split': 'validation',
                      'data_fingerprint': self.fingerprint,
                      'capability': 'experimental character continuation; no general dialogue capability established'}
+                if c['domain'] == 'code':
+                    from .model import self_prediction_metrics
+                    # This diagnostic predicts the inherited serialized genome;
+                    # it never changes parent fitness or champion selection.
+                    state['champion'].update(domain='code',
+                        self_prediction=self_prediction_metrics(genome, max_examples=512),
+                        source_manifest=_source_summary(self.data),
+                        capability='experimental code continuation; host source is never modified or executed')
                 _atomic_json(self.run_dir / 'champion.json', state['champion'])
             old_mean = sum(p['metrics']['fitness'] for p in old_population) / len(old_population)
             selected = pending['selected_parent_fitness']
@@ -326,13 +377,19 @@ class Trainer:
                 self.state['status'] = 'complete'
         except KeyboardInterrupt:
             self.state['status'] = 'interrupted'
+        except Exception as exc:
+            self.state['status'] = 'failed'
+            self.state['error'] = {'type': type(exc).__name__, 'message': str(exc)[:2000]}
+            raise
         finally:
-            self.checkpoint()
-            self._write_history()
-            for sig, handler in old_handlers.items():
-                signal.signal(sig, handler)
+            try:
+                self.checkpoint()
+                self._write_history()
+            finally:
+                for sig, handler in old_handlers.items():
+                    signal.signal(sig, handler)
         champion = self.state['champion']
-        return {'status': self.state['status'], 'generation': self.state['generation'],
+        result = {'status': self.state['status'], 'generation': self.state['generation'],
                 'generations': self.state['generation'], 'elapsed_seconds': self.state['elapsed_seconds'],
                 'total_births': self.state['total_births'], 'guided_events': self.state['guided_events'],
                 'unguided_events': self.state['unguided_events'], 'data_fingerprint': self.fingerprint,
@@ -340,6 +397,12 @@ class Trainer:
                 'champion': str((self.run_dir / 'champion.json').resolve()) if champion else None,
                 'champion_metrics': champion['metrics'] if champion else None,
                 'baseline_metrics': self.state['baseline']}
+        if self.config['domain'] == 'code':
+            result.update(domain='code', source_manifest=_source_summary(self.data),
+                          champion_self_prediction=champion.get('self_prediction') if champion else None,
+                          validation_loss_improvement=(self.state['baseline']['loss'] - champion['metrics']['loss']
+                                                       if champion and self.state['baseline'] else None))
+        return result
 
 
 def train(config: dict, data: dict, run_dir: str | Path, resume: bool = False) -> dict:

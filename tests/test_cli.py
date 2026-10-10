@@ -42,6 +42,29 @@ class CliTests(unittest.TestCase):
                 outputs.append(output.getvalue().strip())
             self.assertEqual(outputs, ["a", "b"])
 
+    def test_corrupt_champion_hash_is_rejected(self):
+        from english_world.model import Genome
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "champion.json"
+            path.write_text(json.dumps({"genome": Genome().to_dict(), "genome_hash": "bad"}), encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["chat", "--checkpoint", str(path), "--prompt", "hello"]), 2)
+
+    def test_code_prediction_and_self_check_are_text_only(self):
+        from english_world.model import Genome
+        genome = Genome(domain="code", max_order=8, rules={"def ": {"F": 255}})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "champion.json"
+            path.write_text(json.dumps({"genome": genome.to_dict(), "genome_hash": genome.digest()}), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["predict", "--checkpoint", str(path), "--text", "def "]), 0)
+            self.assertEqual(json.loads(output.getvalue())["next_characters"][0]["character"], "F")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["self-check", "--checkpoint", str(path)]), 0)
+            self.assertFalse(json.loads(output.getvalue())["self_prediction"]["used_for_fitness"])
+
 
 if __name__ == "__main__":
     unittest.main()

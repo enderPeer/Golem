@@ -51,7 +51,10 @@ def load_champion(path):
     artifact = read_json(path)
     if not isinstance(artifact, dict) or "genome" not in artifact:
         raise ValueError("Checkpoint is not a champion artifact (missing genome).")
-    return Genome.from_dict(artifact["genome"]), artifact
+    genome = Genome.from_dict(artifact["genome"])
+    if artifact.get("genome_hash") is not None and artifact["genome_hash"] != genome.digest():
+        raise ValueError("Champion genome hash does not match its content.")
+    return genome, artifact
 
 
 def print_json(value):
@@ -113,6 +116,8 @@ def evaluate(args):
     from .model import evaluate as score
     genome, artifact = load_champion(args.checkpoint)
     data = load_dataset(args.data)
+    if data.get("domain", "english") != getattr(genome, "domain", "english"):
+        raise ValueError("Dataset and checkpoint domains differ; choose a matching code or English dataset.")
     examples = data[args.split]
     if args.limit:
         examples = examples[:args.limit]
@@ -121,13 +126,35 @@ def evaluate(args):
               "split": args.split, "metrics": result}
     if args.baselines:
         from .model import baseline_metrics
-        report["baselines"] = baseline_metrics(data["train"], examples)
+        report["baselines"] = baseline_metrics(data["train"], examples, domain=getattr(genome, "domain", "english"))
         report["baseline_note"] = "Empirical-count controls are fitted on training examples only, never used as evolutionary founders."
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
     print_json(report)
+    return 0
+
+
+def self_check(args):
+    from .model import self_prediction_metrics
+    genome, artifact = load_champion(args.checkpoint)
+    print_json({"checkpoint": args.checkpoint, "generation": artifact.get("generation"),
+                "genome_hash": genome.digest(),
+                "self_prediction": self_prediction_metrics(genome, max_examples=args.max_examples),
+                "interpretation": "Diagnostic prediction of this genome's serialization; not a reward or proof of self-understanding."})
+    return 0
+
+
+def predict(args):
+    from .model import Predictor, normalize_text
+    genome, _artifact = load_champion(args.checkpoint)
+    context = normalize_text(args.text, domain=getattr(genome, "domain", "english"))
+    distribution = Predictor(genome).distribution(context)
+    choices = sorted(distribution.items(), key=lambda item: (-item[1], item[0]))[:args.top]
+    print_json({"genome_hash": genome.digest(), "domain": getattr(genome, "domain", "english"),
+                "effective_context": context[-genome.max_order:],
+                "next_characters": [{"character": char, "probability": probability} for char, probability in choices]})
     return 0
 
 
@@ -157,7 +184,7 @@ def chat(args):
 
     def reply(message):
         nonlocal history, message_no
-        # The first predictor has at most five characters of effective context.
+        # A short suffix predictor must see the actual end of user input.
         # A fixed "assistant: " suffix would hide every user's actual message.
         # Continue the user's text directly; do not pretend this is a role model.
         context = (history + message.rstrip("\r\n"))[-args.context_chars:]
@@ -171,8 +198,12 @@ def chat(args):
         print(reply(args.prompt))
         return 0
     print("Project Golem — experimental evolved character model")
-    print("Continuation mode: up to 5 characters of effective context; general chat is unproven.")
-    print("This checkpoint may produce fragments or nonsense; spelling is not general understanding.")
+    domain = getattr(genome, "domain", "english")
+    print(f"{domain.capitalize()} continuation mode: up to {genome.max_order} characters of effective context.")
+    if domain == "code":
+        print("Generated code is text only and is never executed; correctness and understanding are unproven.")
+    else:
+        print("This checkpoint may produce fragments or nonsense; general chat is unproven.")
     print(f"Checkpoint: {args.checkpoint} | genome: {genome.digest()[:12]}")
     print("Commands: /info /reset /reload /quit. Ctrl-C or Ctrl-D exits. Chat is not saved.")
     while True:
@@ -209,7 +240,7 @@ def parser():
     p = commands.add_parser("doctor", help="Inspect the local runtime without changing it")
     p.set_defaults(func=doctor)
     p = commands.add_parser("prepare", help="Prepare original fixtures or public English data")
-    p.add_argument("--source", choices=("fixture", "english"), default="fixture")
+    p.add_argument("--source", choices=("fixture", "english", "self-code"), default="fixture")
     p.add_argument("--output", default="data/fixture")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-examples", type=bounded_int(1, 1000000), default=8192)
@@ -237,6 +268,15 @@ def parser():
     p.add_argument("--baselines", action="store_true", help="Include count-fitted unigram and n-gram controls")
     p.add_argument("--output", help="Save this evaluation report as JSON")
     p.set_defaults(func=evaluate)
+    p = commands.add_parser("self-check", help="Measure prediction of the model's own serialized genome")
+    p.add_argument("--checkpoint", default="runs/self-code/champion.json")
+    p.add_argument("--max-examples", type=bounded_int(1, 4096), default=512)
+    p.set_defaults(func=self_check)
+    p = commands.add_parser("predict", help="Inspect next-character probabilities for a prefix")
+    p.add_argument("--checkpoint", default="runs/self-code/champion.json")
+    p.add_argument("--text", required=True)
+    p.add_argument("--top", type=bounded_int(1, 97), default=8)
+    p.set_defaults(func=predict)
     p = commands.add_parser("chat", help="Generate with a saved evolved predictor; no external model")
     p.add_argument("--checkpoint", default="runs/pilot/champion.json")
     p.add_argument("--prompt", help="One-shot generation instead of interactive chat")

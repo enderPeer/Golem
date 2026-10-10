@@ -43,6 +43,19 @@ Correct spelling receives a capped auxiliary reward. The `spelling_score` is the
 
 The first model has short effective context. Although the terminal accepts dialogue history, it cannot infer long-range reasoning abilities from that interface. Generated output is displayed without replacing it with dictionary words or a pretrained response.
 
+## Predict its own code
+
+Version 0.2 adds a distinct code-domain experiment using a pinned snapshot of Golem's own tracked Python files. It preserves case, punctuation and indentation, evolves inherited predictor rules, and selects champions on held-out files. Its own-genome prediction score is a diagnostic, not a fitness shortcut. Existing English checkpoints retain their original v1 representation.
+
+```bash
+./golem prepare --source self-code --output data/self-code
+bash ops/run_pilot.sh configs/self-code.toml data/self-code/dataset.json runs/self-code
+./golem self-check --checkpoint runs/self-code/champion.json
+./golem chat --checkpoint runs/self-code/champion.json
+```
+
+This improves the model genome through selection. It does not rewrite or execute the host Python implementation. See [the self-code experiment](docs/self-code.md) for the exact boundary and evaluation rules.
+
 ## Relationship to DNA-2
 
 The original reference and its MIT license are frozen under `upstream/dna2/`, with source provenance. The original repository is not modified.
