@@ -138,7 +138,7 @@ def neural(args):
             return 0
         print("Project Golem — experimental recurrent neural model")
         print("New randomly initialized model trained on project data; general chat quality must be measured.")
-        print("Commands: /info /reset /quit. History is not saved.")
+        print("Commands: /info /reset /reload /quit. History is not saved.")
         history = []
         turn = 0
         while True:
@@ -156,6 +156,13 @@ def neural(args):
                 continue
             if message.strip() == "/info":
                 print_json(metadata)
+                continue
+            if message.strip() == "/reload":
+                model, metadata = load_neural_checkpoint(args.checkpoint, map_location="cpu")
+                model.eval()
+                history = []
+                turn = 0
+                print("Latest saved neural checkpoint loaded; history cleared.")
                 continue
             if message.strip():
                 user_turn = [USER] + encode_bytes(message)[-args.context_bytes:] + [END, ASSISTANT]
@@ -392,7 +399,7 @@ def parser():
     np.add_argument("--data", default="data/neural-dialogue/dataset.json")
     np.add_argument("--run-dir", default="runs/neural-qat")
     np.add_argument("--config", default="configs/neural-qat.toml")
-    np.add_argument("--threads", type=bounded_int(1, 2), default=2)
+    np.add_argument("--threads", type=bounded_int(1, 2), default=1)
     np.set_defaults(func=neural)
     np = ncommands.add_parser("chat")
     np.add_argument("--checkpoint", required=True)
