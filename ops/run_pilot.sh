@@ -17,9 +17,9 @@ DATA="${2:-data/english/dataset.json}"
 RUN_DIR="${3:-runs/pilot}"
 python3 "$PROJECT_ROOT/ops/worker_guard.py" --validate "$PROJECT_ROOT" "$CONFIG" "$DATA" "$RUN_DIR"
 bash "$PROJECT_ROOT/ops/preflight.sh"
-UNIT="alife-english-pilot-$(date -u +%Y%m%dT%H%M%S)-$$"
+UNIT="golem-pilot-$(date -u +%Y%m%dT%H%M%S)-$$"
 COMMAND=(systemd-run --user --collect --unit="$UNIT"
-    --description="Bounded aLIFE English CPU pilot"
+    --description="Bounded Project Golem CPU pilot"
     --property="WorkingDirectory=$PROJECT_ROOT"
     --property=CPUQuota=400% --property=MemoryMax=8G --property=TasksMax=64
     --property=Nice=19 --property=RuntimeMaxSec=1800

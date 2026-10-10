@@ -61,7 +61,7 @@ def print_json(value):
 def doctor(_args):
     total, used, free = shutil.disk_usage(Path.cwd())
     print_json({
-        "project": "alife-english", "version": __version__,
+        "project": "Golem", "version": __version__,
         "python": platform.python_version(), "platform": platform.system(),
         "cpu_count": os.cpu_count(), "working_directory": str(Path.cwd()),
         "disk_free_gib": round(free / 2**30, 2),
@@ -170,7 +170,7 @@ def chat(args):
     if args.prompt is not None:
         print(reply(args.prompt))
         return 0
-    print("aLIFE English — experimental evolved character model")
+    print("Project Golem — experimental evolved character model")
     print("Continuation mode: up to 5 characters of effective context; general chat is unproven.")
     print("This checkpoint may produce fragments or nonsense; spelling is not general understanding.")
     print(f"Checkpoint: {args.checkpoint} | genome: {genome.digest()[:12]}")
@@ -203,7 +203,7 @@ def chat(args):
 
 
 def parser():
-    ap = argparse.ArgumentParser(prog="english-world", description=__doc__)
+    ap = argparse.ArgumentParser(prog="golem", description=__doc__)
     ap.add_argument("--version", action="version", version=__version__)
     commands = ap.add_subparsers(dest="command", required=True)
     p = commands.add_parser("doctor", help="Inspect the local runtime without changing it")
@@ -253,7 +253,7 @@ def main(argv=None):
     try:
         return args.func(args)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        print(f"english-world: {exc}", file=sys.stderr)
+        print(f"golem: {exc}", file=sys.stderr)
         return 2
 
 

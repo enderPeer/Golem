@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "alife-english"
+name = "project-golem"
 version = "0.1.0"
 description = "A reproducible evolutionary English world and experimental terminal character model"
 requires-python = ">=3.11"
@@ -11,6 +11,7 @@ license = {text = "MIT"}
 dependencies = []
 
 [project.scripts]
+golem = "english_world.cli:main"
 english-world = "english_world.cli:main"
 
 [tool.setuptools.packages.find]

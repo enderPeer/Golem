@@ -1,4 +1,4 @@
-# aLIFE English
+# Project Golem
 
 A separate evolutionary English world, with reproducible experiments and a terminal interface to a saved character predictor.
 
@@ -9,8 +9,8 @@ A separate evolutionary English world, with reproducible experiments and a termi
 Python 3.11 or newer is sufficient; the CPU implementation has no third-party runtime dependencies.
 
 ```bash
-git clone https://github.com/enderPeer/alife-english.git
-cd alife-english
+git clone https://github.com/enderPeer/Golem.git
+cd Golem
 python3 -m english_world doctor
 python3 -m english_world prepare --source fixture --output data/fixture
 python3 -m english_world evolve --config configs/smoke.toml --data data/fixture/dataset.json --run-dir runs/smoke
@@ -29,7 +29,7 @@ python3 -m english_world status --run-dir runs/pilot
 python3 -m english_world chat --checkpoint runs/pilot/champion.json
 ```
 
-Use `--resume` with `evolve` to continue a checkpoint. Increase `--generations` to raise the total target. Run `python3 -m english_world --help` for commands. The `english-world` shell launcher is an equivalent shortcut on Linux.
+Use `--resume` with `evolve` to continue a checkpoint. Increase `--generations` to raise the total target. Run `./golem --help` for commands. The `golem` shell launcher is an equivalent shortcut on Linux; `english-world` remains an alias. The internal Python package and checkpoint schemas retain their versioned `english_world` names.
 
 Chat commands: `/info`, `/reset`, `/reload`, `/quit`. `/reload` picks up a newly saved champion. This version continues the actual end of your input; its effective context is at most five characters. It is not an instruction-following assistant. Chat histories exist only in the terminal process and are not used for training or saved automatically.
 

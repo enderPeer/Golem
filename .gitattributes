@@ -1,6 +1,7 @@
 * text=auto
 *.sh text eol=lf
 english-world text eol=lf
+golem text eol=lf
 *.py text eol=lf
 *.json text eol=lf
 *.toml text eol=lf

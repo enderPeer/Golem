@@ -19,7 +19,7 @@ class CliTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.assertEqual(main(["chat", "--checkpoint", "nonexistent-champion.json", "--prompt", "hi"]), 2)
-        self.assertIn("english-world:", output.getvalue())
+        self.assertIn("golem:", output.getvalue())
 
     def test_command_defaults(self):
         args = parser().parse_args(["evolve"])
