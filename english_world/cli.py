@@ -37,6 +37,13 @@ def positive_float(value):
     return number
 
 
+def nonnegative_float(value):
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("must be finite and nonnegative")
+    return number
+
+
 def read_json(path):
     with Path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -147,11 +154,18 @@ def load_neural_input(path):
     if schema == "golem-relation-corpus-v1":
         from .relation_corpus import load_relation_corpus
         return load_relation_corpus(candidate)
+    if schema == "golem-chat-corpus-v1":
+        from .chat_corpus import load_chat_corpus
+        return load_chat_corpus(candidate)
     from .data import load_dataset
     return load_dataset(candidate)
 
 
 def neural(args):
+    if args.neural_command == "chat-prepare":
+        from .chat_corpus import prepare_chat_corpus
+        print(f"Chat curriculum ready: {prepare_chat_corpus(args.output, seed=args.seed)}")
+        return 0
     if args.neural_command == "prepare":
         from .neural_corpus import prepare_neural_corpus
         print(f"Neural corpus ready: {prepare_neural_corpus(args.output, seed=args.seed, max_conversations=args.max_conversations)}")
@@ -167,6 +181,34 @@ def neural(args):
         import torch
     except ImportError as exc:
         raise ValueError("Neural commands need the isolated PyTorch runtime; see requirements-neural.txt and docs/neural.md.") from exc
+    if args.neural_command == "chat-train":
+        from .chat_training import train_chat
+        config = load_config(args.config)
+        for key in ("threads", "device"):
+            value = getattr(args, key, None)
+            if value is not None:
+                config[key] = value
+        print_json(train_chat(config, load_neural_input(args.data), args.run_dir, resume=args.resume))
+        return 0
+    if args.neural_command == "chat-eval":
+        from .chat_eval import evaluate_chat
+        from .neural_model import load_neural_checkpoint
+        torch.set_num_threads(args.threads)
+        sha = hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
+        model, _metadata = load_neural_checkpoint(args.checkpoint)
+        if hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest() != sha:
+            raise ValueError("Checkpoint changed while loading; retry or use a frozen copy")
+        data = load_neural_input(args.data)
+        result = evaluate_chat(model, data, split=args.split, max_cases=args.cases)
+        result["provenance"] = {"checkpoint_sha256": sha,
+            "corpus_content_sha256": data.get("manifest", {}).get("content_sha256"),
+            "torch_version": str(torch.__version__)}
+        if args.output:
+            path = Path(args.output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print_json(result)
+        return 0
     if args.neural_command == "relation-eval":
         from .neural_model import load_neural_checkpoint
         from .relation_eval import evaluate_relations
@@ -476,6 +518,26 @@ def parser():
             gp.add_argument("--max-concepts", type=bounded_int(10, 20000), default=6000)
     p = commands.add_parser("neural", help="Optional PyTorch neural model and controlled evolution experiments")
     ncommands = p.add_subparsers(dest="neural_command", required=True)
+    np = ncommands.add_parser("chat-prepare", help="Prepare original short-chat exercises with held-out prompt families")
+    np.add_argument("--output", default="data/chat")
+    np.add_argument("--seed", type=int, default=61)
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("chat-train", help="Train and genetically vary chat learners against controls")
+    np.add_argument("--config", default="configs/neural-chat.toml")
+    np.add_argument("--data", default="data/chat/dataset.json")
+    np.add_argument("--run-dir", default="runs/neural-chat")
+    np.add_argument("--device")
+    np.add_argument("--threads", type=bounded_int(1, 64))
+    np.add_argument("--resume", action="store_true")
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("chat-eval", help="Generate held-out replies and report transparent, limited rubrics")
+    np.add_argument("--checkpoint", required=True)
+    np.add_argument("--data", default="data/chat/dataset.json")
+    np.add_argument("--split", choices=("validation", "test"), default="validation")
+    np.add_argument("--cases", type=bounded_int(1, 1024), default=128)
+    np.add_argument("--threads", type=bounded_int(1, 64), default=1)
+    np.add_argument("--output")
+    np.set_defaults(func=neural)
     np = ncommands.add_parser("prepare", help="Fetch a pinned English dialogue corpus with conversation-disjoint splits")
     np.add_argument("--output", default="data/neural-dialogue")
     np.add_argument("--seed", type=int, default=23)
@@ -526,7 +588,7 @@ def parser():
     np.add_argument("--prompt")
     np.add_argument("--max-bytes", type=bounded_int(1, 2048), default=160)
     np.add_argument("--context-bytes", type=bounded_int(1, 8192), default=2048)
-    np.add_argument("--temperature", type=positive_float, default=0.8)
+    np.add_argument("--temperature", type=nonnegative_float, default=0.8)
     np.add_argument("--seed", type=int, default=1)
     np.add_argument("--threads", type=bounded_int(1, 2), default=1)
     np.set_defaults(func=neural)

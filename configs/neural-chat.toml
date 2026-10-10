@@ -1,0 +1,34 @@
+# One controlled island. Cluster runs materialize explicit variants of this file.
+strategies = ["ordinary", "independent", "evolution"]
+population_size = 4
+rounds = 8
+max_total_updates = 2400
+batch_size = 8
+sequence_length = 128
+seed = 61
+threads = 2
+device = "cpu"
+generation_device = "cpu"
+gpu_memory_limit_gib = 2.0
+learning_rate = 0.0015
+weight_decay = 0.01
+gradient_clip = 1.0
+validation_batches = 4
+validation_cases = 24
+test_cases = 56
+max_new_tokens = 96
+checkpoint_every = 100
+checkpoint_seconds = 30.0
+max_seconds = 3300.0
+replace_count = 2
+weight_mutation_probability = 0.5
+weight_noise_rms_fraction = 0.002
+crossover_probability = 0.25
+evolve_curriculum = true
+init_checkpoint = "runs/seeds/chat-language.pt"
+
+[model]
+embedding_dim = 128
+hidden_size = 256
+num_layers = 2
+dropout = 0.1

@@ -1,6 +1,6 @@
-# Optional independently tested gfx1201 environment; do not replace CPU reference.
+# Optional AMD environment; keep the CPU reference separate.
 --index-url https://repo.amd.com/rocm/whl-multi-arch/
 --extra-index-url https://pypi.org/simple
-rocm[libraries,device-gfx1201]==7.14.1
-torch[device-gfx1201]==2.12.0+rocm7.14.1
+rocm[libraries,device-gfx1200,device-gfx1201]==7.14.1
+torch[device-gfx1200,device-gfx1201]==2.12.0+rocm7.14.1
 numpy==2.5.3
