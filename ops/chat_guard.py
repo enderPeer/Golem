@@ -43,6 +43,7 @@ def main():
     parser.add_argument('--run-dir', required=True)
     parser.add_argument('--minimum-free-gib', type=float, default=50.)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--mode', choices=('chat-train', 'world-train'), default='chat-train')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     if not 2 <= args.minimum_free_gib <= 10000:
@@ -59,7 +60,7 @@ def main():
     if run.exists() and any(run.iterdir()) and not args.resume:
         parser.error('Use a fresh run directory or explicit resume')
     print(check_storage(root, args.minimum_free_gib), flush=True)
-    command = [sys.executable, '-B', '-m', 'english_world', 'neural', 'chat-train',
+    command = [sys.executable, '-B', '-m', 'english_world', 'neural', args.mode,
                '--config', str(config), '--data', str(data), '--run-dir', str(run)]
     if args.resume:
         command.append('--resume')

@@ -1,0 +1,36 @@
+# Independent learners share a verified simulator, not one another's claims.
+strategies = ["ordinary", "evolution"]
+population_size = 4
+rounds = 8
+max_total_updates = 1600
+batch_size = 8
+max_context_tokens = 512
+max_reply_tokens = 128
+first_response_bytes = 8
+max_new_tokens = 120
+seed = 97
+threads = 2
+device = "cpu"
+generation_device = "cpu"
+gpu_memory_limit_gib = 2.0
+learning_rate = 0.0005
+dropout = 0.1
+weight_decay = 0.01
+gradient_clip = 1.0
+intent_loss_weight = 1.0
+first_response_weight = 3.0
+validation_batches = 4
+validation_episodes = 24
+test_episodes = 64
+checkpoint_every = 50
+checkpoint_seconds = 30.0
+max_seconds = 3300.0
+replace_count = 2
+evolve_curriculum = true
+init_checkpoint = "runs/seeds/world-chat-base.pt"
+
+[model]
+embedding_dim = 128
+hidden_size = 256
+num_layers = 2
+dropout = 0.1

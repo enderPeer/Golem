@@ -157,11 +157,18 @@ def load_neural_input(path):
     if schema == "golem-chat-corpus-v1":
         from .chat_corpus import load_chat_corpus
         return load_chat_corpus(candidate)
+    if schema == "golem-conversation-sim-v1":
+        from .conversation_sim import load_conversation_sim
+        return load_conversation_sim(candidate)
     from .data import load_dataset
     return load_dataset(candidate)
 
 
 def neural(args):
+    if args.neural_command == "world-prepare":
+        from .conversation_sim import prepare_conversation_sim
+        print(f"Conversation worlds ready: {prepare_conversation_sim(args.graph, args.output, seed=args.seed)}")
+        return 0
     if args.neural_command == "chat-prepare":
         from .chat_corpus import prepare_chat_corpus
         print(f"Chat curriculum ready: {prepare_chat_corpus(args.output, seed=args.seed)}")
@@ -181,6 +188,83 @@ def neural(args):
         import torch
     except ImportError as exc:
         raise ValueError("Neural commands need the isolated PyTorch runtime; see requirements-neural.txt and docs/neural.md.") from exc
+    if args.neural_command == "world-train":
+        from .semantic_training import train_semantic
+        config = load_config(args.config)
+        for key in ("threads", "device"):
+            value = getattr(args, key, None)
+            if value is not None:
+                config[key] = value
+        print_json(train_semantic(config, load_neural_input(args.data), args.run_dir, resume=args.resume))
+        return 0
+    if args.neural_command == "world-eval":
+        from .semantic_model import load_semantic_checkpoint, generate_semantic
+        from .conversation_eval import evaluate_conversations
+        torch.set_num_threads(args.threads)
+        sha = hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
+        model, _metadata = load_semantic_checkpoint(args.checkpoint)
+        if hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest() != sha:
+            raise ValueError("Checkpoint changed while loading; retry or use a frozen copy")
+        def generate(turns, **kwargs):
+            return generate_semantic(model, turns, **kwargs)
+        result = evaluate_conversations(generate, load_neural_input(args.data), split=args.split,
+                                        max_episodes=args.episodes)
+        result["checkpoint_sha256"] = sha
+        if args.output:
+            path = Path(args.output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print_json(result)
+        return 0
+    if args.neural_command == "world-chat":
+        from .semantic_model import load_semantic_checkpoint, generate_semantic
+        from .dialogue_state import extract_user_facts
+        torch.set_num_threads(args.threads)
+        model, metadata = load_semantic_checkpoint(args.checkpoint)
+        if args.prompt is not None:
+            result = generate_semantic(model, [{"role": "user", "content": args.prompt}],
+                                       max_new_tokens=args.max_bytes, temperature=args.temperature)
+            print(terminal_text(result["text"]))
+            return 0
+        print("Project Golem — simulated-conversation learner")
+        print("Learned request meanings and replies; explicit user-only name memory. Experimental.")
+        print("Commands: /info /meaning /memory /reset /reload /quit. Chat is not saved.")
+        history, last_meaning = [], None
+        while True:
+            try:
+                message = input("you> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if message.strip() in ("/quit", "/exit"):
+                return 0
+            if message.strip() == "/info":
+                print_json(metadata)
+                continue
+            if message.strip() == "/meaning":
+                print_json(last_meaning)
+                continue
+            if message.strip() == "/memory":
+                print_json(extract_user_facts(history))
+                continue
+            if message.strip() in ("/reset", "/reload"):
+                if message.strip() == "/reload":
+                    model, metadata = load_semantic_checkpoint(args.checkpoint)
+                history, last_meaning = [], None
+                print("Conversation and verified name memory cleared.")
+                continue
+            if message.strip():
+                proposed = history + [{"role": "user", "content": message}]
+                try:
+                    result = generate_semantic(model, proposed, max_new_tokens=args.max_bytes,
+                                               temperature=args.temperature)
+                except ValueError as exc:
+                    print("golem> " + str(exc))
+                    continue
+                print("golem> " + terminal_text(result["text"]))
+                history = proposed + [{"role": "assistant", "content": result["text"]}]
+                last_meaning = {key: result[key] for key in ("meaning_id", "meaning_probabilities")}
+        return 0
     if args.neural_command == "chat-train":
         from .chat_training import train_chat
         config = load_config(args.config)
@@ -518,6 +602,34 @@ def parser():
             gp.add_argument("--max-concepts", type=bounded_int(10, 20000), default=6000)
     p = commands.add_parser("neural", help="Optional PyTorch neural model and controlled evolution experiments")
     ncommands = p.add_subparsers(dest="neural_command", required=True)
+    np = ncommands.add_parser("world-prepare", help="Build meaning-grounded simulated conversations with independent state")
+    np.add_argument("--graph", default="data/lexicon/graph.json")
+    np.add_argument("--output", default="data/conversation-world")
+    np.add_argument("--seed", type=int, default=97)
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("world-train", help="Train meaning-conditioned learners in conversation worlds")
+    np.add_argument("--config", default="configs/neural-world.toml")
+    np.add_argument("--data", default="data/conversation-world/dataset.json")
+    np.add_argument("--run-dir", default="runs/conversation-world")
+    np.add_argument("--threads", type=bounded_int(1, 64))
+    np.add_argument("--device")
+    np.add_argument("--resume", action="store_true")
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("world-eval", help="Score free rollouts and source-grounded memory, not teacher histories")
+    np.add_argument("--checkpoint", required=True)
+    np.add_argument("--data", default="data/conversation-world/dataset.json")
+    np.add_argument("--split", choices=("validation", "test", "regression"), default="validation")
+    np.add_argument("--episodes", type=bounded_int(1, 512), default=32)
+    np.add_argument("--threads", type=bounded_int(1, 64), default=1)
+    np.add_argument("--output")
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("world-chat", help="Chat with a meaning-conditioned conversation learner")
+    np.add_argument("--checkpoint", required=True)
+    np.add_argument("--prompt")
+    np.add_argument("--max-bytes", type=bounded_int(1, 512), default=120)
+    np.add_argument("--temperature", type=nonnegative_float, default=0.0)
+    np.add_argument("--threads", type=bounded_int(1, 64), default=1)
+    np.set_defaults(func=neural)
     np = ncommands.add_parser("chat-prepare", help="Prepare original short-chat exercises with held-out prompt families")
     np.add_argument("--output", default="data/chat")
     np.add_argument("--seed", type=int, default=61)

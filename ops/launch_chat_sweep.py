@@ -14,8 +14,9 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     manifest = json.loads(Path(args.manifest).read_text())
-    if manifest.get('schema') != 'golem-chat-cluster-sweep-v1':
+    if manifest.get('schema') not in ('golem-chat-cluster-sweep-v1', 'golem-semantic-world-sweep-v1'):
         raise ValueError('Unsupported reviewed allocation manifest')
+    world = manifest['schema'] == 'golem-semantic-world-sweep-v1'
     jobs = [job for job in manifest['jobs'] if job['host'] == socket.gethostname()]
     if not jobs or any(Path(job['root']).resolve() != root for job in jobs):
         raise ValueError('Manifest host/project root mismatch')
@@ -28,7 +29,7 @@ def main():
     for job in jobs:
         if args.kind != 'all' and job['kind'] != args.kind:
             continue
-        receipt = root / 'runs/launches' / (job['id'] + '.unit')
+        receipt = root / ('runs/world-launches' if world else 'runs/launches') / (job['id'] + '.unit')
         if receipt.exists():
             print(json.dumps({'id': job['id'], 'already_launched': receipt.read_text().strip()}), flush=True)
             continue
@@ -44,7 +45,7 @@ def main():
         if job['kind'] == 'gpu':
             # Only AMD devices were admitted by this recorded cluster inventory.
             env['HIP_VISIBLE_DEVICES'] = str(job['physical_gpu'])
-        subprocess.run(['bash', 'ops/run_chat.sh', job['config'], job['run_dir']],
+        subprocess.run(['bash', 'ops/run_world.sh' if world else 'ops/run_chat.sh', job['config'], job['run_dir']],
                        cwd=root, env=env, check=True)
         print(json.dumps({'id': job['id'], 'launched': True}), flush=True)
 
