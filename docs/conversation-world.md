@@ -252,6 +252,28 @@ covers the validation data and scoring settings; a stage with a changed protocol
 cannot replace that island's existing champion. Cross-island comparison still
 requires matching protocol hashes and documented evaluation settings.
 
+The initial stage budget is eight rounds with **1,600 updates per strategy on
+CPU** or **800 per strategy on GPU**, inside the 1,800-second stage limit.
+Strategies execute sequentially. Their order alternates across islands so that
+the whole allocation does not always give the ordinary learner first access to
+the time budget. This reduces allocation bias but does not make an unfinished
+stage a matched comparison.
+
+Review the first stage's actual updates, validation calls and recorded cost for
+each strategy alongside the unit's elapsed time. Full conversation rollouts can
+consume substantial time; a short startup canary does not measure that cost.
+If the earlier strategy repeatedly consumes most of the stage, fresh warm-starts
+can repeatedly leave the second strategy unfinished. Such stages are useful
+exploration, but must not support a claim of an advantage at matched update
+budgets.
+
+A reviewed future configuration could use **four rounds and CPU 800 / GPU 400
+updates per strategy**. This retains the current 50 / 25 updates per candidate
+block while halving both training work and the number of validation calls.
+Halving updates alone would leave validation overhead unchanged. Make any such
+adjustment through a reviewed fresh supervisor run; do not edit an active run's
+pinned base configuration. The initial active configurations are unchanged.
+
 The supervisor starts helpers and training in owned process groups and never
 signals unrelated jobs. It has a 15-second shutdown reserve before the absolute
 UTC deadline. The actual `run_world_long.sh` launcher also sets an independent
