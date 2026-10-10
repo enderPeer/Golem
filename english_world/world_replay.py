@@ -295,3 +295,35 @@ def apply_repair_overlay(data, path):
     # Validation, test, regression episodes and samples remain the original
     # shared objects. The base TRAIN list and every base sample are untouched.
     return result
+
+
+def apply_repair_overlays(data, paths):
+    """Combine at most two independently verified overlays on the pristine base.
+
+    The optional teacher lesson and current learner replay retain separate
+    checkpoint provenance. Neither may redefine targets or accumulate an
+    already augmented corpus. Validation/test objects remain unchanged.
+    """
+    base = _data(data)
+    paths = list(paths)
+    if not 1 <= len(paths) <= 2:
+        raise ValueError('provide one or two bounded repair overlays')
+    if len(paths) == 1:
+        return apply_repair_overlay(base, paths[0])
+    added, seen, provenance = [], set(), []
+    original_count = len(base['samples']['train'])
+    for path in paths:
+        verified = apply_repair_overlay(base, path)
+        provenance.append(verified['repair_overlay_provenance'])
+        for row in verified['samples']['train'][original_count:]:
+            if row['id'] not in seen:
+                seen.add(row['id'])
+                added.append(row)
+    result = dict(base)
+    result['samples'] = dict(base['samples'])
+    result['samples']['train'] = list(base['samples']['train']) + added
+    result['repair_overlay_provenance'] = {
+        'schema': 'golem-verified-repair-combination-v1',
+        'overlays': provenance, 'added_train_samples': len(added),
+        'policy': 'Each overlay separately verified against pristine TRAIN; duplicate IDs included once.'}
+    return result

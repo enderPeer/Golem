@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -119,6 +120,80 @@ class SemanticModelTests(unittest.TestCase):
     def test_oversize_architecture_rejected_before_allocation(self):
         with self.assertRaisesRegex(ValueError, 'ten million'):
             SemanticGRU(NeuralConfig(embedding_dim=4096, hidden_size=4096, num_layers=16))
+
+    def test_gain_one_is_bit_exact_with_legacy_conditioning_expression(self):
+        self.model.eval()
+        prefix = torch.tensor([encode_history([{'role': 'user', 'content': 'hello'}])])
+        lengths = torch.tensor([prefix.shape[1]])
+        with torch.no_grad():
+            values = self.model.core.input_dropout(self.model.core.embedding(prefix))
+            packed = torch.nn.utils.rnn.pack_padded_sequence(values, lengths, batch_first=True, enforce_sorted=False)
+            _, raw = self.model.core.gru(packed)
+            logits = self.model.meaning_head(raw[-1])
+            meaning = torch.tanh(torch.softmax(logits, -1) @ self.model.meaning_embedding.weight)
+            old_top = raw[-1] + torch.sigmoid(self.model.condition_logit) * meaning
+            hidden, actual_logits = self.model.encode(prefix, lengths)
+        self.assertEqual(self.model.meaning_condition_gain, 1.)
+        self.assertTrue(torch.equal(hidden[-1], old_top))
+        self.assertTrue(torch.equal(actual_logits, logits))
+
+    def test_gain_scales_only_predicted_residual_and_is_checkpointed(self):
+        self.model.eval()
+        prefix = torch.tensor([encode_history([{'role': 'user', 'content': 'hello'}])])
+        lengths = torch.tensor([prefix.shape[1]])
+        before_keys = tuple(self.model.state_dict())
+        with torch.no_grad():
+            _, acts_before = self.model.encode(prefix, lengths)
+            values = self.model.core.embedding(prefix)
+            packed = torch.nn.utils.rnn.pack_padded_sequence(values, lengths, batch_first=True, enforce_sorted=False)
+            _, raw = self.model.core.gru(packed)
+            mean = torch.tanh(torch.softmax(acts_before, -1) @ self.model.meaning_embedding.weight)
+            expected = raw[-1] + (torch.sigmoid(self.model.condition_logit) * mean) * 32.
+            self.model.meaning_condition_gain = 32.
+            hidden, acts_after = self.model.encode(prefix, lengths)
+        self.assertTrue(torch.equal(hidden[-1], expected))
+        self.assertTrue(torch.equal(acts_before, acts_after))
+        self.assertEqual(tuple(self.model.state_dict()), before_keys)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'gain.pt'
+            save_semantic_checkpoint(path, self.model)
+            restored, _ = load_semantic_checkpoint(path)
+            warmed, _ = warm_start_semantic(path, self.config)
+            self.assertEqual(restored.meaning_condition_gain, 32.)
+            self.assertEqual(warmed.meaning_condition_gain, 32.)
+            with torch.no_grad():
+                self.assertTrue(torch.equal(restored.encode(prefix, lengths)[0], hidden))
+
+    def test_legacy_payload_missing_gain_loads_with_one_and_identical_output(self):
+        self.model.eval()
+        turns = [{'role': 'user', 'content': 'hello'}]
+        expected = generate_semantic(self.model, turns, max_new_tokens=8)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'old.pt'
+            save_semantic_checkpoint(path, self.model)
+            artifact = torch.load(path, weights_only=True)
+            artifact.pop('meaning_condition_gain')
+            torch.save(artifact, path)
+            restored, _ = load_semantic_checkpoint(path)
+            self.assertEqual(restored.meaning_condition_gain, 1.)
+            self.assertEqual(generate_semantic(restored, turns, max_new_tokens=8), expected)
+
+    def test_invalid_gain_is_rejected_before_model_allocation(self):
+        bad_values = (0., .99, 65., float('inf'), float('nan'), True, '32')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'bad.pt'
+            save_semantic_checkpoint(path, self.model)
+            artifact = torch.load(path, weights_only=True)
+            for gain in bad_values:
+                with self.subTest(gain=gain), self.assertRaises(ValueError):
+                    SemanticGRU(self.config, meaning_condition_gain=gain)
+                artifact['meaning_condition_gain'] = gain
+                torch.save(artifact, path)
+                with self.subTest(load_gain=gain), \
+                     patch('english_world.semantic_model.SemanticGRU', side_effect=AssertionError('model allocated')) as constructor:
+                    with self.assertRaisesRegex(ValueError, 'meaning_condition_gain'):
+                        load_semantic_checkpoint(path)
+                    constructor.assert_not_called()
 
 
 if __name__ == '__main__':

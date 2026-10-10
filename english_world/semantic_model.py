@@ -26,6 +26,15 @@ SCHEMA = 'golem-semantic-gru-v1'
 MEMORY_POLICY = 'Explicit USER-only verified fact prefix; learned meaning and decoder; no gold frames at inference.'
 
 
+def _validate_condition_gain(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError('meaning_condition_gain must be a finite number in 1..64')
+    value = float(value)
+    if not math.isfinite(value) or not 1. <= value <= 64.:
+        raise ValueError('meaning_condition_gain must be a finite number in 1..64')
+    return value
+
+
 def _validate_model_size(config):
     e, h, layers, vocab = config.embedding_dim, config.hidden_size, config.num_layers, config.vocab_size
     total = vocab * e + 3 * h * e + 3 * h * h + 6 * h
@@ -71,8 +80,11 @@ def encode_history(turns, max_context_tokens=512, trim_history=False):
 
 
 class SemanticGRU(nn.Module):
-    def __init__(self, config=None, acts=ACTS):
+    def __init__(self, config=None, acts=ACTS, *, meaning_condition_gain=1.0):
         super().__init__()
+        # A plain bounded architectural setting, not an extra learned tensor.
+        # Validate before constructing the core or allocating its parameters.
+        self.meaning_condition_gain = meaning_condition_gain
         self.config = NeuralConfig.from_dict(config) if isinstance(config, dict) else config or NeuralConfig()
         _validate_model_size(self.config)
         self.acts = tuple(acts)
@@ -83,6 +95,14 @@ class SemanticGRU(nn.Module):
         self.meaning_embedding = nn.Embedding(len(self.acts), self.config.hidden_size)
         nn.init.normal_(self.meaning_embedding.weight, std=.02)
         self.condition_logit = nn.Parameter(torch.tensor(math.log(.1 / .9)))
+
+    @property
+    def meaning_condition_gain(self):
+        return self._meaning_condition_gain
+
+    @meaning_condition_gain.setter
+    def meaning_condition_gain(self, value):
+        self._meaning_condition_gain = _validate_condition_gain(value)
 
     def set_dropout(self, value):
         self.core.set_dropout(value)
@@ -99,7 +119,12 @@ class SemanticGRU(nn.Module):
         # gold-act conditioning API and therefore no teacher/oracle routing gap.
         probabilities = torch.softmax(act_logits, dim=-1)
         meaning = torch.tanh(probabilities @ self.meaning_embedding.weight)
-        top = hidden[-1] + torch.sigmoid(self.condition_logit) * meaning
+        residual = torch.sigmoid(self.condition_logit) * meaning
+        # Preserve legacy arithmetic exactly at gain 1: no extra multiply or
+        # changed operation order. Larger gains are explicit experimental models.
+        if self.meaning_condition_gain != 1.:
+            residual = residual * self.meaning_condition_gain
+        top = hidden[-1] + residual
         conditioned = torch.cat((hidden[:-1], top.unsqueeze(0)), dim=0)
         return conditioned, act_logits
 
@@ -165,10 +190,12 @@ def generate_semantic(model, turns, max_new_tokens=120, temperature=0., seed=7, 
 
 def save_semantic_checkpoint(path, model, metadata=None):
     path = Path(path)
+    gain = _validate_condition_gain(model.meaning_condition_gain)
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata = json.loads(json.dumps(metadata or {}, allow_nan=False))
     _finite_weights(model.state_dict())
     artifact = {'schema': SCHEMA, 'config': model.config.to_dict(), 'acts': list(model.acts),
+                'meaning_condition_gain': gain,
                 'model_state': {name: value.detach().cpu().clone() for name, value in model.state_dict().items()},
                 'metadata': metadata, 'memory_policy': MEMORY_POLICY}
     temporary = path.with_name(path.name + '.tmp')
@@ -184,9 +211,10 @@ def load_semantic_checkpoint(path, map_location='cpu'):
     artifact = torch.load(Path(path), map_location='cpu', weights_only=True)
     if not isinstance(artifact, dict) or artifact.get('schema') != SCHEMA:
         raise ValueError('unsupported semantic checkpoint schema')
+    gain = _validate_condition_gain(artifact.get('meaning_condition_gain', 1.))
     _finite_weights(artifact.get('model_state'))
     with torch.random.fork_rng(devices=[]):
-        model = SemanticGRU(NeuralConfig.from_dict(artifact['config']), artifact['acts'])
+        model = SemanticGRU(NeuralConfig.from_dict(artifact['config']), artifact['acts'], meaning_condition_gain=gain)
     model.load_state_dict(artifact['model_state'], strict=True)
     model.to(map_location)
     model.eval()
@@ -198,6 +226,8 @@ def warm_start_semantic(path, config=None):
     artifact = torch.load(Path(path), map_location='cpu', weights_only=True)
     if not isinstance(artifact, dict):
         raise ValueError('semantic warm-start artifact must be an object')
+    if artifact.get('schema') == SCHEMA:
+        _validate_condition_gain(artifact.get('meaning_condition_gain', 1.))
     _validate_model_size(NeuralConfig.from_dict(artifact.get('config')))
     _finite_weights(artifact.get('model_state'))
     if artifact.get('schema') == SCHEMA:

@@ -130,6 +130,31 @@ class WorldReplayTests(unittest.TestCase):
                     should_stop=lambda: len(responses) >= 1)
         self.assertFalse(path.exists())
 
+    def test_two_overlays_deduplicate_without_changing_heldout_or_base(self):
+        original = copy.deepcopy(self.data)
+        path, _ = self.build()
+        combined = replay.apply_repair_overlays(self.data, [path, path])
+        self.assertEqual(len(combined['samples']['train']), len(self.data['samples']['train']) + 2)
+        self.assertEqual(combined['repair_overlay_provenance']['added_train_samples'], 2)
+        self.assertEqual(len(combined['repair_overlay_provenance']['overlays']), 2)
+        self.assertIs(combined['samples']['validation'], self.data['samples']['validation'])
+        self.assertIs(combined['samples']['test'], self.data['samples']['test'])
+        self.assertEqual(self.data, original)
+        self.assertEqual(replay.apply_repair_overlays(self.data, [path]),
+                         replay.apply_repair_overlay(self.data, path))
+
+    def test_second_overlay_is_independently_validated_and_combination_bounded(self):
+        path, _ = self.build()
+        forged = json.loads(path.read_text())
+        forged['samples'][0]['reply'] = 'A fabricated target.'
+        bad_path = self.root / 'forged.json'
+        self.rewrite(bad_path, forged)
+        with self.assertRaisesRegex(ValueError, 'verified simulator'):
+            replay.apply_repair_overlays(self.data, [path, bad_path])
+        for paths in ([], [path] * 3):
+            with self.assertRaises(ValueError):
+                replay.apply_repair_overlays(self.data, paths)
+
 
 if __name__ == '__main__':
     unittest.main()

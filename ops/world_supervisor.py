@@ -207,7 +207,8 @@ def candidate_summary(checkpoint):
             'schema': 'golem-semantic-gru-v1', 'quality': quality,
             'validation_protocol_hash': protocol, 'strategy': metadata.get('strategy'),
             'updates': metadata.get('global_updates'), 'recipe': metadata.get('recipe', {}),
-            'model_config': model.config.to_dict(), 'parameter_count': model.parameter_count}
+            'model_config': model.config.to_dict(), 'parameter_count': model.parameter_count,
+            'meaning_condition_gain': model.meaning_condition_gain}
 
 
 def condensed_seed(source, destination, provenance, seed=1):

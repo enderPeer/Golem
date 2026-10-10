@@ -254,7 +254,7 @@ requires matching protocol hashes and documented evaluation settings.
 
 The initial stage budget is eight rounds with **1,600 updates per strategy on
 CPU** or **800 per strategy on GPU**, inside the 1,800-second stage limit.
-Strategies execute sequentially. Their order alternates across islands so that
+The initial deployment executed strategies sequentially. Its order alternated across islands so that
 the whole allocation does not always give the ordinary learner first access to
 the time budget. This reduces allocation bias but does not make an unfinished
 stage a matched comparison.
@@ -272,7 +272,45 @@ updates per strategy**. This retains the current 50 / 25 updates per candidate
 block while halving both training work and the number of validation calls.
 Halving updates alone would leave validation overhead unchanged. Make any such
 adjustment through a reviewed fresh supervisor run; do not edit an active run's
-pinned base configuration. The initial active configurations are unchanged.
+pinned base configuration. Those original stage records remain intact. The first
+hourly review found the second strategy at zero updates on slower hosts. New
+stages now default to `strategy_schedule = "round_robin"`: each strategy gets one
+complete training and validation block, then yields to the next, preserving its
+weights, optimizer and random state. Legacy checkpoint resumes retain their
+original sequential schedule unless a new experiment is explicitly created.
+This prevents repeated starvation; it does not establish identical hardware work.
+
+### First hourly teaching experiment
+
+The 11 October 01:00 Berlin review found good meaning classification but poor
+generated replies in a frozen Falke candidate. On 64 strictly non-regression
+TRAIN episodes, meaning accuracy was 93.89%, while no complete conversation
+passed the authored reply checks. A separate known-regression trace also failed.
+No held-out test was evaluated and this candidate was not released to live chat.
+
+On two failed TRAIN examples, the learned meaning contribution was only
+0.20–0.28% of the encoder state norm. Removing it left both wrong greedy replies
+unchanged. Teacher-forced and incremental logits agreed to about 1e-5, so this
+probe found weak conditioning rather than a target-shift error.
+
+The isolated `falke64-world-teacher-1` experiment uses an explicit
+`meaning_condition_gain = 32.0`, saved in its checkpoints and reused at inference.
+Existing models retain gain 1.0, including legacy checkpoints without the field.
+The gain is bounded to 1..64 and is an experimental intervention, not a measured
+improvement. Its recipe weights the first eight reply bytes by 6.0 and keeps
+meaning-loss weight at 0.5.
+
+Its additional immutable teacher overlay is
+`data/conversation-world/teacher-repairs-20261011T0105.json`, SHA-256
+`34d2209474192f66ac364ba0b7c8eac28bc8e6d3a897e97d2efd53f9adfac534`.
+It contains 89 corrected contexts from 53 original TRAIN episodes. All targets
+are original verified TRAIN references; generated replies are untrusted history.
+`ops/build_teacher_repairs.py` selects cases with a correct predicted meaning and
+a failed reply, rejects changed USER facts and held-out/regression episodes,
+and validates the result with the same replay loader. At most two overlays can
+be combined against the pristine base; their separate hashes and source models
+are recorded, and duplicate sample IDs are included once. The original corpus,
+validation and test partitions remain fixed.
 
 The supervisor starts helpers and training in owned process groups and never
 signals unrelated jobs. It has a 15-second shutdown reserve before the absolute

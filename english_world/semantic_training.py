@@ -38,9 +38,9 @@ def _config(config):
          'threads': 2, 'device': 'cpu', 'gpu_memory_limit_gib': 2., 'generation_device': 'cpu',
          'seed': 79, 'max_seconds': 1800., 'checkpoint_every': 50, 'checkpoint_seconds': 60.,
          'validation_batches': 4, 'validation_episodes': 16, 'test_episodes': 32,
-         'evaluate_test_on_complete': True,
+         'evaluate_test_on_complete': True, 'strategy_schedule': 'round_robin',
          'learning_rate': .0005, 'dropout': .1, 'weight_decay': .01, 'gradient_clip': 1.,
-         'intent_loss_weight': 1., 'first_response_weight': 3., 'replace_count': 2,
+         'intent_loss_weight': 1., 'first_response_weight': 3., 'meaning_condition_gain': 1., 'replace_count': 2,
          'evolve_curriculum': True, 'model': NeuralConfig().to_dict()}
     c.update(copy.deepcopy(config))
     c['model'] = {**NeuralConfig().to_dict(), **config.get('model', {})}
@@ -66,13 +66,16 @@ def _config(config):
         if type(c[key]) is not int or not low <= c[key] <= high:
             raise ValueError(f'{key} must be an integer in {low}..{high}')
     for key in ('max_seconds', 'checkpoint_seconds', 'gpu_memory_limit_gib', 'learning_rate',
-                'dropout', 'weight_decay', 'gradient_clip', 'intent_loss_weight', 'first_response_weight'):
+                'dropout', 'weight_decay', 'gradient_clip', 'intent_loss_weight', 'first_response_weight',
+                'meaning_condition_gain'):
         c[key] = float(c[key])
         if not math.isfinite(c[key]) or c[key] < 0:
             raise ValueError(f'{key} must be finite and nonnegative')
     for key in ('learning_rate', 'dropout', 'intent_loss_weight', 'first_response_weight'):
         if not BOUNDS[key][0] <= c[key] <= BOUNDS[key][1]:
             raise ValueError(f'{key} outside bounded recipe range')
+    if not 1. <= c['meaning_condition_gain'] <= 64.:
+        raise ValueError('meaning_condition_gain must be in 1..64')
     if c['max_seconds'] > 86400 or not 0 < c['checkpoint_seconds'] <= 3600 or not 0 < c['gpu_memory_limit_gib'] <= 256 or c['gradient_clip'] <= 0:
         raise ValueError('invalid runtime, checkpoint, GPU memory or gradient budget')
     if c['max_total_updates'] % (4 * c['rounds']):
@@ -80,6 +83,8 @@ def _config(config):
     if not isinstance(c['strategies'], (list, tuple)) or not c['strategies'] or len(set(c['strategies'])) != len(c['strategies']) or set(c['strategies']) - {'ordinary', 'independent', 'evolution'}:
         raise ValueError('strategies must be a unique nonempty list of ordinary/independent/evolution')
     c['strategies'] = list(c['strategies'])
+    if c['strategy_schedule'] not in ('round_robin', 'sequential'):
+        raise ValueError('strategy_schedule must be round_robin or sequential')
     if c['generation_device'] not in ('cpu', 'model'):
         raise ValueError('generation_device must be cpu or model')
     device = torch.device(c['device'])
@@ -91,12 +96,13 @@ def _config(config):
     else:
         c.pop('init_checkpoint', None)
         c.pop('init_checkpoint_sha256', None)
-    if c.get('repair_overlay'):
-        c['repair_overlay'] = Path(c['repair_overlay']).expanduser().as_posix()
-        c['repair_overlay_sha256'] = _checkpoint_hash(c['repair_overlay'])
-    else:
-        c.pop('repair_overlay', None)
-        c.pop('repair_overlay_sha256', None)
+    for key in ('repair_overlay', 'teacher_overlay'):
+        if c.get(key):
+            c[key] = Path(c[key]).expanduser().as_posix()
+            c[key + '_sha256'] = _checkpoint_hash(c[key])
+        else:
+            c.pop(key, None)
+            c.pop(key + '_sha256', None)
     NeuralConfig(**c['model'])
     return c
 
@@ -203,7 +209,8 @@ def _sample(buckets, batch_size, recipe, seed):
 
 def _clone(weights, config, dropout):
     with torch.random.fork_rng(devices=[]):
-        model = SemanticGRU(NeuralConfig(**{**config['model'], 'dropout': dropout}))
+        model = SemanticGRU(NeuralConfig(**{**config['model'], 'dropout': dropout}),
+                            meaning_condition_gain=config['meaning_condition_gain'])
     model.load_state_dict(weights)
     return model
 
@@ -286,7 +293,8 @@ def _publish(state, directory):
                     'validation': best['validation'], 'selection_split': 'validation',
                     'memory_policy': MEMORY_POLICY, 'initialization': state['initialization'],
                     'validation_protocol': state['validation_protocol'],
-                    'validation_protocol_hash': state['validation_protocol_hash']}
+                    'validation_protocol_hash': state['validation_protocol_hash'],
+                    'strategy_schedule': state['config']['strategy_schedule']}
         save_semantic_checkpoint(directory / (name + '_champion.pt'), model, metadata)
         eligible.append((name, model, metadata, _quality(best['validation'])))
     if eligible:
@@ -302,6 +310,7 @@ def _summary(state, directory):
         strategies[name]['best_validation'] = strategy['best']['validation'] if strategy['best'] else None
         strategies[name]['champion'] = str(directory / (name + '_champion.pt')) if strategy['best'] else None
     return {'schema': SCHEMA, 'status': state['status'], 'active_strategy': state['active_strategy'],
+            'schedule_cursor': state.get('schedule_cursor'),
             'config': state['config'], 'data_fingerprint': state['data_fingerprint'],
             'initialization': state['initialization'], 'parameter_count': state['parameter_count'],
             'validation_protocol': state['validation_protocol'],
@@ -311,7 +320,7 @@ def _summary(state, directory):
             'memory_policy': MEMORY_POLICY, 'strategies': strategies, 'error': state.get('error'),
             'selection_rule': 'Zero observed validation false-memory claims first; generated conversation score, episode success, then lower current-reply NLL.',
             'supervision': 'Current reference reply plus act only; extra weight on initial current-reply bytes. No previous assistant token loss. Decoder conditioned on predicted soft acts only.',
-            'budget_claim': 'Same optimizer updates and validation requests per strategy; actual prefix/reply token work and CPU/wall time reported. Evolved curricula can change lengths, so total compute is not asserted equal.'}
+            'budget_claim': 'Completed strategies receive the same optimizer-update and validation-request budgets. Interrupted strategies may receive unequal work; actual updates, tokens and CPU/wall time are reported. Evolved curricula can change lengths, so total compute is not asserted equal.'}
 
 
 def _checkpoint(state, directory, models=None, optimizers=None, device=None):
@@ -387,8 +396,22 @@ def _step(name, strategy, models, optimizers, encoded, buckets, data, config, de
 
 
 def train_semantic(config, data, run_dir, resume=False):
+    # Old checkpoints predate the scheduler option and used a sequential loop.
+    # Infer their actual schedule before applying the default for fresh runs.
+    state = None
+    directory = Path(run_dir)
+    if resume:
+        state = torch.load(directory / 'semantic-training.pt', map_location='cpu', weights_only=True)
+        if not isinstance(state, dict) or state.get('schema') != SCHEMA:
+            raise ValueError('unsupported semantic checkpoint schema')
+        config = {**config}
+        config.setdefault('strategy_schedule', state['config'].get('strategy_schedule', 'sequential'))
     config = _config(config)
-    if config.get('repair_overlay'):
+    if config.get('teacher_overlay'):
+        from .world_replay import apply_repair_overlays
+        paths = [config[key] for key in ('repair_overlay', 'teacher_overlay') if config.get(key)]
+        data = apply_repair_overlays(data, paths)
+    elif config.get('repair_overlay'):
         from .world_replay import apply_repair_overlay
         data = apply_repair_overlay(data, config['repair_overlay'])
     device = _device(config)
@@ -399,14 +422,14 @@ def train_semantic(config, data, run_dir, resume=False):
     identity = {key: data.get(key, {}) for key in ('samples', 'episodes', 'meaning_graph', 'schema')}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     protocol, protocol_hash = _validation_protocol(data, config)
-    directory = Path(run_dir)
     directory.mkdir(parents=True, exist_ok=True)
     if resume:
-        state = torch.load(directory / 'semantic-training.pt', map_location='cpu', weights_only=True)
         if state.get('schema') != SCHEMA or state['data_fingerprint'] != fingerprint:
             raise ValueError('semantic checkpoint or dataset identity mismatch')
         for key in set(config) | set(state['config']):
             legacy_default = {'evaluate_test_on_complete': True,
+                              'strategy_schedule': 'sequential',
+                              'meaning_condition_gain': 1.,
                               'validation_seed': state['config']['seed'] + 40000,
                               'validation_nll_seed': state['config']['seed'] + 30000,
                               'validation_batch_size': state['config']['batch_size']}.get(key)
@@ -415,6 +438,7 @@ def train_semantic(config, data, run_dir, resume=False):
         if state.get('validation_protocol_hash', protocol_hash) != protocol_hash:
             raise ValueError('validation protocol changed during semantic resume')
         state['config'] = config
+        state.setdefault('schedule_cursor', config['strategies'].index(state['active_strategy']))
         state['validation_protocol'], state['validation_protocol_hash'] = protocol, protocol_hash
         if state['status'] == 'complete':
             return _summary(state, directory)
@@ -429,7 +453,8 @@ def train_semantic(config, data, run_dir, resume=False):
             initialization = {'checkpoint_sha256': config['init_checkpoint_sha256'], 'source_metadata': metadata,
                               'optimizer_reset': True, 'shared_semantic_initialization': True}
         else:
-            prototype = SemanticGRU(NeuralConfig(**config['model']))
+            prototype = SemanticGRU(NeuralConfig(**config['model']),
+                                    meaning_condition_gain=config['meaning_condition_gain'])
             initialization = {'random_semantic_initialization': True, 'shared_semantic_initialization': True}
         initial_weights = _cpu(prototype.state_dict())
         if any(not torch.isfinite(value).all() for value in initial_weights.values()):
@@ -437,6 +462,7 @@ def train_semantic(config, data, run_dir, resume=False):
         initialization['weight_sha256'] = _hash_weights(initial_weights)
         state = {'schema': SCHEMA, 'config': config, 'data_fingerprint': fingerprint,
                  'status': 'running', 'active_strategy': config['strategies'][0], 'strategies': {},
+                 'schedule_cursor': 0,
                  'initialization': initialization, 'parameter_count': prototype.parameter_count}
         state['validation_protocol'], state['validation_protocol_hash'] = protocol, protocol_hash
         for name in config['strategies']:
@@ -464,11 +490,26 @@ def train_semantic(config, data, run_dir, resume=False):
         return stop[0] or bool(config['max_seconds'] and time.monotonic() - started >= config['max_seconds'])
     models = optimizers = None
     try:
-        for name in config['strategies']:
+        while True:
+            pending = {name for name, row in state['strategies'].items()
+                       if row['updates'] < config['max_total_updates'] or row['evaluation_due']}
+            if not pending:
+                break
+            if should_stop():
+                raise InterruptedError('semantic run budget reached')
+            if config['strategy_schedule'] == 'sequential':
+                name = next(name for name in config['strategies'] if name in pending)
+            else:
+                count = len(config['strategies'])
+                cursor = state['schedule_cursor']
+                if type(cursor) is not int or not 0 <= cursor < count:
+                    raise ValueError('invalid semantic scheduler cursor')
+                index = next((cursor + offset) % count for offset in range(count)
+                             if config['strategies'][(cursor + offset) % count] in pending)
+                state['schedule_cursor'] = index
+                name = config['strategies'][index]
             strategy = state['strategies'][name]
             state['active_strategy'] = name
-            if strategy['updates'] >= config['max_total_updates'] and not strategy['evaluation_due']:
-                continue
             models, optimizers = _restore(strategy, config, device)
             strategy['status'] = 'running'
             while strategy['updates'] < config['max_total_updates'] or strategy['evaluation_due']:
@@ -482,15 +523,29 @@ def train_semantic(config, data, run_dir, resume=False):
                     _sync_device(device)
                     strategy['cpu_seconds'] += time.process_time() - cpu
                     strategy['wall_seconds'] += time.monotonic() - wall
+                switch = was_evaluation and config['strategy_schedule'] == 'round_robin'
+                if switch:
+                    # Capture every block in memory, but preserve the configured
+                    # disk checkpoint cadence. Only one strategy owns live
+                    # device models/optimizers; its RNG is restored on return.
+                    _capture(strategy, models, optimizers, device)
+                    models = optimizers = None
+                    state['schedule_cursor'] = (state['schedule_cursor'] + 1) % len(config['strategies'])
+                    if strategy['updates'] >= config['max_total_updates']:
+                        strategy['status'] = 'trained'
                 if was_evaluation:
                     _publish(state, directory)
                     _json(directory / 'status.json', _summary(state, directory))
                 if (not was_evaluation and strategy['updates'] % config['checkpoint_every'] == 0) or time.monotonic() - last_checkpoint >= config['checkpoint_seconds']:
                     _checkpoint(state, directory, models, optimizers, device)
                     last_checkpoint = time.monotonic()
-            strategy['status'] = 'trained'
-            _checkpoint(state, directory, models, optimizers, device)
-            models = optimizers = None
+                if switch:
+                    break
+            if strategy['updates'] >= config['max_total_updates'] and not strategy['evaluation_due']:
+                strategy['status'] = 'trained'
+                _checkpoint(state, directory, models, optimizers, device)
+                last_checkpoint = time.monotonic()
+                models = optimizers = None
         if config['evaluate_test_on_complete']:
             test_samples = encode_samples(data, 'test', config)
             for name in config['strategies']:
