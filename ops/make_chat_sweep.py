@@ -15,7 +15,7 @@ ALLOCATIONS = {
                  'gpu_python': '/home/ender/golem/.venv-rocm/bin/python', 'cpu_memory_mib': 2048},
     'falke64': {'root': '/home/ender/golem', 'cpu_jobs': 4, 'gpu_ids': [0],
                 'cpu_python': '/home/ender/homunculi/.venv/bin/python',
-                'gpu_python': '/home/ender/homunculi/.venv/bin/python', 'cpu_memory_mib': 1536},
+                'gpu_python': '/home/ender/golem/.venv-rocm/bin/python', 'cpu_memory_mib': 1536},
     'adler40': {'root': '/home/ender/golem', 'cpu_jobs': 10, 'gpu_ids': [],
                 'cpu_python': '/home/ender/homunculi/.venv/bin/python', 'cpu_memory_mib': 2048},
     'knecht24': {'root': '/tmp/golem-chat-20261010', 'cpu_jobs': 9, 'gpu_ids': [],
