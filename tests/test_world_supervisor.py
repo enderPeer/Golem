@@ -181,6 +181,97 @@ class SupervisorTests(unittest.TestCase):
                 worker.promote(stage)
         self.assertFalse((worker.run_dir / 'global_best.pt').exists())
 
+    def test_only_owned_budget_sigterm_with_committed_clean_report_is_acceptable(self):
+        phase = {'reason': 'budget_stop', 'returncode': -supervisor.signal.SIGTERM}
+        report = {'schema': 'golem-semantic-training-v1', 'status': 'time_limit', 'error': None}
+        self.assertTrue(supervisor.committed_training_phase(phase, report))
+        for changed_phase, changed_report in (
+                ({**phase, 'reason': 'exited'}, report),
+                ({**phase, 'reason': 'memory budget'}, report),
+                ({**phase, 'returncode': -9}, report),
+                ({**phase, 'returncode': 1}, report),
+                (phase, {**report, 'status': 'running'}),
+                (phase, {**report, 'status': 'complete'}),
+                (phase, {**report, 'error': {'message': 'failed'}}),
+                (phase, {})):
+            with self.subTest(phase=changed_phase, report=changed_report):
+                self.assertFalse(supervisor.committed_training_phase(changed_phase, changed_report))
+
+    def test_budget_sigterm_stage_still_validates_and_promotes_committed_checkpoint(self):
+        worker = self.instance(max_stages=1)
+        protocol = 'd' * 64
+        def stopped_trainer(command, log_path, hard_deadline, phase, helper=False):
+            stage = Path(log_path).parent
+            (stage / 'run').mkdir()
+            (stage / 'run' / 'best.pt').write_bytes(b'committed candidate')
+            supervisor.atomic_json(stage / 'run' / 'report.json', {
+                'schema': 'golem-semantic-training-v1', 'status': 'time_limit', 'error': None,
+                'validation_protocol_hash': protocol})
+            return {'phase': 'training', 'reason': 'budget_stop', 'returncode': -supervisor.signal.SIGTERM}
+        def inspect(kind, stage, payload, seconds):
+            self.assertEqual(kind, 'inspect')
+            return {'checkpoint_sha256': supervisor.sha256(stage / 'run' / 'best.pt'),
+                    'validation_protocol_hash': protocol,
+                    'quality': {'false_memory_claims': 0, 'score': .2,
+                                'whole_episode_pass_rate': 0., 'reply_loss': 1.}}, {'phase': 'inspect'}
+        with patch.object(worker, 'run_child', side_effect=stopped_trainer), \
+             patch.object(worker, 'helper', side_effect=inspect), patch.object(worker, 'resource_check'):
+            result = worker.run()
+        self.assertEqual(result['status'], 'stage_limit_reached')
+        self.assertEqual(result['stages'][0]['status'], 'complete')
+        self.assertIn('SIGTERM', result['stages'][0]['shutdown_note'])
+        self.assertEqual(result['consecutive_failures'], 0)
+        self.assertEqual((worker.run_dir / 'global_best.pt').read_bytes(), b'committed candidate')
+
+    def test_resume_recovers_journaled_budget_exit_and_pending_stage_not_unrecorded_files(self):
+        worker = self.instance()
+        worker.resume_requested = True
+        one, two, unrecorded = [self.stage(n, owner=worker.state['supervisor_id']) for n in (1, 2, 3)]
+        protocol = 'c' * 64
+        for stage in (one, two, unrecorded):
+            supervisor.atomic_json(stage / 'run' / 'report.json', {
+                'schema': 'golem-semantic-training-v1', 'status': 'time_limit', 'error': None,
+                'validation_protocol_hash': protocol})
+        worker.state['stages'] = [
+            {'stage': one.name, 'status': 'failed', 'trainer_status': 'time_limit',
+             'error': {'message': 'training stage failed or did not publish a complete status report'},
+             'phases': [{'phase': 'training', 'reason': 'budget_stop', 'returncode': -supervisor.signal.SIGTERM}]},
+            {'stage': two.name, 'status': 'interrupted',
+             'pending_final_candidate': {'path': str((two / 'run' / 'best.pt').relative_to(worker.run_dir)),
+                                         'sha256': supervisor.sha256(two / 'run' / 'best.pt')}}]
+        worker.state['consecutive_failures'] = 2
+        inspected = []
+        def inspect(kind, stage, payload, seconds):
+            inspected.append(stage.name)
+            return {'checkpoint_sha256': supervisor.sha256(stage / 'run' / 'best.pt'),
+                    'validation_protocol_hash': protocol,
+                    'quality': {'false_memory_claims': 0, 'score': .1 if stage == one else .2,
+                                'whole_episode_pass_rate': 0., 'reply_loss': 1.}}, {'phase': 'inspect'}
+        with patch.object(worker, 'helper', side_effect=inspect), patch.object(worker, 'resource_check'):
+            worker.recover_recorded_candidates()
+            worker.recover_recorded_candidates()  # Already validated identities are not reloaded.
+        self.assertEqual(inspected, [one.name, two.name])
+        self.assertEqual(worker.state['global_best']['quality']['score'], .2)
+        self.assertEqual(worker.state['consecutive_failures'], 0)
+        self.assertEqual(len(worker.state['candidate_recovery']), 2)
+        self.assertTrue(all(row['status'] == 'validated' for row in worker.state['candidate_recovery']))
+        self.assertEqual(worker.state['stages'][0]['status'], 'failed')  # Preserve original audit record.
+
+    def test_recovery_requires_pending_sha_and_never_promotes_after_deadline(self):
+        worker = self.instance()
+        worker.resume_requested = True
+        stage = self.stage(1, owner=worker.state['supervisor_id'])
+        worker.state['stages'] = [{'stage': stage.name, 'status': 'interrupted',
+            'pending_final_candidate': {'path': str((stage / 'run' / 'best.pt').relative_to(worker.run_dir)),
+                                        'sha256': '0' * 64}}]
+        with patch.object(worker, 'helper') as helper:
+            worker.recover_recorded_candidates()
+            self.assertEqual(worker.state['candidate_recovery'][-1]['status'], 'rejected')
+            worker.deadline = time.time() - 1
+            worker.recover_recorded_candidates()
+        helper.assert_not_called()
+        self.assertIsNone(worker.state['global_best'])
+
     def test_flat_seed_preserves_weights_and_source_bytes_without_nested_metadata(self):
         import torch
         from english_world.neural_model import NeuralConfig

@@ -10,6 +10,12 @@ RUNTIME="${GOLEM_PYTHON:-$ROOT/.venv-neural/bin/python}"
 THREADS="${GOLEM_THREADS:-2}"
 MEMORY_MIB="${GOLEM_MEMORY_MIB:-2048}"
 RESERVE="${GOLEM_MIN_FREE_GIB:-50}"
+RESUME_ARGS=()
+case "${GOLEM_RESUME:-0}" in
+    0) ;;
+    1) RESUME_ARGS=(--resume) ;;
+    *) printf 'GOLEM_RESUME must be 0 or 1.\n' >&2; exit 2 ;;
+esac
 test -x "$RUNTIME"
 [[ "$THREADS" =~ ^[1-9][0-9]?$ ]] && (( THREADS <= 64 ))
 [[ "$MEMORY_MIB" =~ ^[0-9]+$ ]] && (( MEMORY_MIB >= 512 && MEMORY_MIB <= 8192 ))
@@ -32,5 +38,5 @@ systemd-run --user --collect --unit="$UNIT" \
     "$RUNTIME" "$ROOT/ops/world_supervisor.py" --config-base "$CONFIG" \
         --data data/conversation-world/dataset.json --run-dir "$RUN_DIR" --deadline "$DEADLINE" \
         --stage-seconds 1800 --shutdown-grace 15 --memory-limit-mib "$MEMORY_MIB" \
-        --min-free-gib "$RESERVE" --run-budget-gib 1 --project-budget-gib 20 --self-replay
+        --min-free-gib "$RESERVE" --run-budget-gib 1 --project-budget-gib 20 --self-replay "${RESUME_ARGS[@]}"
 printf '%s.service\n' "$UNIT" | tee "$ROOT/runs/world-long-launches/$(basename -- "$RUN_DIR").unit"

@@ -334,6 +334,21 @@ as pending and retained for post-deadline collection.
 
 ## Prepare and inspect
 
+The 11 October 01:45 Berlin status review found a shutdown race: an owned
+stage-budget SIGTERM could arrive after the trainer committed its checkpoint and
+`time_limit` report, while the CLI was printing the large report. The supervisor
+now accepts only that specific signal/report combination and still validates the
+checkpoint before selecting it. Arbitrary failures remain failures. CLI output
+is compact; full evidence remains in `report.json`.
+
+For explicit maintenance after stopping the previous managed unit,
+`GOLEM_RESUME=1 bash ops/run_world_long.sh CONFIG RUN_DIR DEADLINE` retains the
+supervisor identity and absolute deadline. Resume considers only journaled
+budget-SIGTERM failures and explicitly recorded pending candidates, checking
+ownership, committed reports, hashes and validation protocol before selection.
+Recovery is recorded separately without rewriting the original failure history.
+This option must not be used while the old managed unit or its child survives.
+
 The commands below use the current model/corpus interfaces. A direct `world-train`
 run is finite and, unless its configuration disables it, evaluates test data when
 complete. Use the supervisor for the extended run and deferred-test policy.

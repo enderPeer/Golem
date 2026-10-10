@@ -195,7 +195,15 @@ def neural(args):
             value = getattr(args, key, None)
             if value is not None:
                 config[key] = value
-        print_json(train_semantic(config, load_neural_input(args.data), args.run_dir, resume=args.resume))
+        report = train_semantic(config, load_neural_input(args.data), args.run_dir, resume=args.resume)
+        run = Path(args.run_dir).resolve()
+        print_json({'status': report.get('status'), 'run_dir': str(run),
+                    'report_path': str(run / 'report.json'),
+                    'champion': str(run / 'best.pt') if (run / 'best.pt').is_file() else None,
+                    'strategies': {name: {'status': value.get('status'), 'updates': value.get('updates'),
+                                         'validation_calls': value.get('validation_calls')}
+                                   for name, value in report.get('strategies', {}).items()},
+                    'error': report.get('error')})
         return 0
     if args.neural_command == "world-eval":
         from .semantic_model import load_semantic_checkpoint, generate_semantic

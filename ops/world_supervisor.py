@@ -179,6 +179,17 @@ def quality_key(summary):
             quality['whole_episode_pass_rate'], -quality['reply_loss'])
 
 
+def committed_training_phase(phase, report):
+    """Accept our budget SIGTERM only after a valid final report was committed."""
+    if (report.get('schema') != 'golem-semantic-training-v1' or report.get('error') is not None or
+            report.get('status') not in ('complete', 'time_limit', 'interrupted') or
+            phase.get('reason') not in ('exited', 'budget_stop')):
+        return False
+    return (phase.get('returncode') == 0 or
+            (phase.get('reason') == 'budget_stop' and phase.get('returncode') == -signal.SIGTERM and
+             report.get('status') in ('time_limit', 'interrupted')))
+
+
 def candidate_summary(checkpoint):
     """Helper-only Torch operation. The supervising process never calls this."""
     import torch
@@ -352,6 +363,7 @@ class WorldSupervisor:
         self.replay_seconds, self.replay_episodes, self.replay_samples = replay_seconds, replay_episodes, replay_samples
         self.stop_requested, self.child = False, None
         self.interrupted_stage = None
+        self.resume_requested = bool(resume)
         self.last_project_check, self.last_status = 0., 0.
         with self.config_path.open('rb') as handle:
             self.base = tomllib.load(handle)
@@ -417,6 +429,82 @@ class WorldSupervisor:
             self.state['stages'].append(summary)
         self.interrupted_stage = None
 
+    def recover_recorded_candidates(self):
+        """Recover only journaled budget exits or explicitly pending candidates.
+
+        Historical failures remain recorded as failures. This separate recovery
+        audit records validation and promotion; no directory discovery is used.
+        """
+        if not self.resume_requested:
+            return
+        audits = self.state.setdefault('candidate_recovery', [])
+        for entry in self.state['stages']:
+            if self.stopping():
+                return
+            phases = [phase for phase in entry.get('phases', []) if phase.get('phase') == 'training']
+            phase = phases[-1] if phases else {}
+            legacy_budget_exit = (entry.get('status') == 'failed' and entry.get('trainer_status') in ('time_limit', 'interrupted')
+                and phase.get('reason') == 'budget_stop' and phase.get('returncode') == -signal.SIGTERM
+                and entry.get('error', {}).get('message') == 'training stage failed or did not publish a complete status report')
+            pending = entry.get('pending_final_candidate')
+            explicit_pending = entry.get('status') in ('interrupted', 'deadline_checkpoint') and isinstance(pending, dict)
+            if not legacy_budget_exit and not explicit_pending:
+                continue
+            name = entry.get('stage')
+            audit = {'stage': name, 'checked_utc': utc_now(), 'reason': 'budget_sigterm' if legacy_budget_exit else 'recorded_pending'}
+            try:
+                if not isinstance(name, str) or not re.fullmatch(r'stage-[0-9]{6}', name):
+                    raise ValueError('invalid recorded stage identity')
+                raw_stage = self.run_dir / 'stages' / name
+                if raw_stage.is_symlink():
+                    raise ValueError('recorded stage must not be a symlink')
+                stage = contained(self.run_dir, raw_stage)
+                marker = stage / 'ownership.json'
+                if marker.is_symlink() or json.loads(marker.read_text(encoding='utf-8')) != {
+                        'supervisor_id': self.state['supervisor_id'], 'stage': name}:
+                    raise ValueError('recorded stage ownership mismatch')
+                candidate = stage / 'run' / 'best.pt'
+                if candidate.is_symlink() or not candidate.is_file() or not candidate.resolve().is_relative_to(stage):
+                    raise ValueError('recorded candidate missing or unsafe')
+                digest = sha256(candidate)
+                audit['checkpoint_sha256'] = digest
+                if any(row.get('stage') == name and row.get('checkpoint_sha256') == digest and
+                       row.get('status') == 'validated' for row in audits):
+                    continue
+                if explicit_pending and (pending.get('path') != str(candidate.relative_to(self.run_dir)) or pending.get('sha256') != digest):
+                    raise ValueError('pending candidate identity changed')
+                report_path = stage / 'run' / 'report.json'
+                if not report_path.exists():
+                    report_path = report_path.with_name(report_path.name + '.gz')
+                if report_path.is_symlink() or not report_path.resolve().is_relative_to(stage):
+                    raise ValueError('recorded report path is unsafe')
+                opener = gzip.open if report_path.suffix == '.gz' else open
+                with opener(report_path, 'rt', encoding='utf-8') as stream:
+                    material = stream.read(64 * 1024 * 1024 + 1)
+                if len(material) > 64 * 1024 * 1024:
+                    raise ValueError('recorded report exceeds recovery limit')
+                report = json.loads(material)
+                if legacy_budget_exit:
+                    if not committed_training_phase(phase, report):
+                        raise ValueError('budget exit lacks a committed successful shutdown report')
+                elif (report.get('schema') != 'golem-semantic-training-v1' or report.get('error') is not None or
+                      report.get('status') not in ('complete', 'time_limit', 'interrupted')):
+                    raise ValueError('pending candidate lacks a committed successful shutdown report')
+                protocol = report.get('validation_protocol_hash')
+                if not isinstance(protocol, str) or not re.fullmatch(r'[0-9a-f]{64}', protocol):
+                    raise ValueError('recorded report lacks its validation protocol identity')
+                self.resource_check()
+                summary, inspection = self.promote(stage, expected_protocol=protocol, expected_sha=digest)
+                audit.update(status='validated', promoted=summary.get('promoted', True),
+                             quality=summary['quality'], inspection=inspection)
+                self.state['consecutive_failures'] = 0
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                audit.update(status='rejected', error={'type': type(exc).__name__, 'message': str(exc)[:2000]})
+            audits.append(audit)
+            self.save()
+
     def stopping(self):
         return self.stop_requested or time.time() >= self.deadline - self.grace
 
@@ -431,6 +519,7 @@ class WorldSupervisor:
         value.update(updated_utc=utc_now(), completed_stages=len(self.state['stages']),
                      seconds_remaining=max(0., self.deadline - time.time()),
                      latest_stage=self.state['stages'][-1] if self.state['stages'] else None,
+                     candidate_recovery=self.state.get('candidate_recovery', [])[-20:],
                      final_test_policy='No stage uses test labels; final test is deferred until after the global deadline.')
         atomic_json(self.run_dir / 'status.json', value)
         self.last_status = time.monotonic()
@@ -518,11 +607,15 @@ class WorldSupervisor:
         value = json.loads(result.read_text(encoding='utf-8'))
         return value, phase
 
-    def promote(self, stage):
+    def promote(self, stage, expected_protocol=None, expected_sha=None):
         candidate = stage / 'run' / 'best.pt'
         if not candidate.is_file():
             return None, None
         summary, phase = self.helper('inspect', stage, {'checkpoint': str(candidate)}, seconds=120)
+        if expected_sha is not None and summary['checkpoint_sha256'] != expected_sha:
+            raise ValueError('recorded candidate changed before inspection')
+        if expected_protocol is not None and summary['validation_protocol_hash'] != expected_protocol:
+            raise ValueError('candidate differs from its committed report validation protocol')
         previous = self.state['global_best']
         if previous and previous['validation_protocol_hash'] != summary['validation_protocol_hash']:
             raise ValueError('stage changed the frozen validation protocol; candidate rejected')
@@ -575,6 +668,7 @@ class WorldSupervisor:
         try:
             self.recover_interrupted_stage()
             self.save()
+            self.recover_recorded_candidates()
             while self.state['next_stage'] <= self.max_stages:
                 if self.stopping() or self.deadline - time.time() <= self.grace + 20:
                     self.state['status'] = 'interrupted' if self.stop_requested and time.time() < self.deadline - self.grace else 'deadline_reached'
@@ -608,9 +702,11 @@ class WorldSupervisor:
                     report_path = stage / 'run' / 'report.json'
                     child_report = json.loads(report_path.read_text(encoding='utf-8')) if report_path.is_file() else {}
                     summary['trainer_status'] = child_report.get('status')
-                    if phase['returncode'] != 0 or phase['reason'] not in ('exited', 'budget_stop') or child_report.get('status') not in ('complete', 'time_limit', 'interrupted'):
+                    if not committed_training_phase(phase, child_report):
                         raise RuntimeError('training stage failed or did not publish a complete status report')
-                    candidate, promotion_phase = self.promote(stage)
+                    if phase['returncode'] == -signal.SIGTERM:
+                        summary['shutdown_note'] = 'Owned budget SIGTERM arrived after committed shutdown report; checkpoint validation is still required.'
+                    candidate, promotion_phase = self.promote(stage, expected_protocol=child_report.get('validation_protocol_hash'))
                     if promotion_phase:
                         summary['phases'].append(promotion_phase)
                     summary['candidate'] = candidate
@@ -645,6 +741,8 @@ class WorldSupervisor:
                         time.sleep(min(1., until - time.time()))
             else:
                 self.state['status'] = 'stage_limit_reached'
+        except InterruptedError:
+            self.state['status'] = 'deadline_reached' if time.time() >= self.deadline - self.grace else 'interrupted'
         except Exception as exc:
             self.state.update(status='failed', error={'type': type(exc).__name__, 'message': str(exc)[:2000]})
         finally:
