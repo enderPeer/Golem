@@ -1,6 +1,7 @@
 """Small, dependency-free command line; the model never invokes a hosted service."""
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -171,8 +172,16 @@ def neural(args):
         from .relation_eval import evaluate_relations
         torch.set_num_threads(args.threads)
         model, _metadata = load_neural_checkpoint(args.checkpoint)
-        result = evaluate_relations(model, load_neural_input(args.data), split=args.split,
+        data = load_neural_input(args.data)
+        result = evaluate_relations(model, data, split=args.split,
                                     max_cases=args.cases, graph_path=args.graph)
+        result["provenance"] = {
+            "checkpoint_name": Path(args.checkpoint).name,
+            "checkpoint_sha256": hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
+            "corpus_content_sha256": data.get("manifest", {}).get("content_sha256"),
+            "graph_sha256": hashlib.sha256(Path(args.graph).read_bytes()).hexdigest(),
+            "torch_version": str(torch.__version__),
+        }
         if args.output:
             path = Path(args.output)
             path.parent.mkdir(parents=True, exist_ok=True)

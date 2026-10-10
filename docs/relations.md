@@ -185,7 +185,12 @@ python -m english_world neural relation-eval --checkpoint runs/neural-relations/
 Repeat for `evolution_champion.pt` when that arm has produced a checkpoint. Use
 test results for a final selected experiment, not for repeated model selection.
 The evaluator scores teacher-forced answer likelihood and contrasts a true answer
-with a same-relation distractor. The full graph helps reject distractors that are
+with a same-relation distractor. It also scores the same answer under its actual
+question and a different-source question of the same relation type. This second
+contrast holds answer wording and frequency fixed. Known valid alternative
+questions and questions exposing the correct answer are excluded; exclusion
+counts and cases without a suitable pair are retained in the report.
+The full graph helps reject distractors that are
 also valid; its answer is never fed into the neural prompt as a hidden retrieval
 result. These are diagnostic likelihood measures, not free-generation accuracy.
 
@@ -194,6 +199,14 @@ has only two antonym examples, and validation has none; those samples cannot
 support broad claims about antonym knowledge. Definitions and synonyms dominate
 the dataset, so an improved aggregate score alone is insufficient evidence of
 learning every relation type.
+
+The frozen starting checkpoint scored 3.4981 bits per answer byte on the first
+256 deterministically selected validation facts (13,234 bytes, no truncation).
+Using the wrong question increased loss by 0.0170 nats/byte on average across
+253 eligible pairs. For answers absent from the correct prompt, that gap was
+only 0.00373; for prompt-visible answers it was 0.18066. These are pre-fine-tuning
+diagnostics, measured with CPU PyTorch 2.14.1 and one thread. They do not establish
+useful factual answers; compare the completed run against this frozen baseline.
 
 ## Prepared artifact identities
 

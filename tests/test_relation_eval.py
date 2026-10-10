@@ -78,6 +78,51 @@ class RelationEvaluationTests(unittest.TestCase):
         self.assertEqual(report['prompt_visibility']['visible_in_prompt']['cases'], 1)
         self.assertEqual(report['prompt_visibility']['not_visible_in_prompt']['cases'], 2)
 
+    def test_same_answer_question_contrast_detects_prompt_dependence_and_filters_leaks(self):
+        class PromptModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.anchor = torch.nn.Parameter(torch.zeros(()))
+
+            def forward(self, inputs):
+                logits = torch.zeros((*inputs.shape, 260), device=inputs.device)
+                # This test-only causal rule identifies the uppercase cue in the
+                # question. Answer tokens X/Y/Z cannot supply that cue themselves.
+                for row in range(inputs.shape[0]):
+                    seen_a = (inputs[row] == ord('A')).cumsum(0) > 0
+                    logits[row, :, ord('X')] = seen_a.float() * 6
+                    logits[row, :, ord('Y')] = (~seen_a).float() * 6
+                return logits, None
+
+        records = [fact('a', 'sense-a', 'answer-x', 'X'), fact('b', 'sense-b', 'answer-y', 'Y'),
+                   fact('c', 'sense-c', 'answer-z', 'Z')]
+        records[0]['question'] = 'Query A?'
+        records[1]['question'] = 'Query B includes X?'
+        records[2]['question'] = 'Query C?'
+        records[1]['answer_visible_in_prompt'] = True
+        data = {'facts': {'test': records}}
+        first = evaluate_relations(PromptModel(), data)
+        second = evaluate_relations(PromptModel(), data)
+        self.assertEqual(first, second)
+        row = next(row for row in first['rows'] if row['id'] == 'a')
+        self.assertEqual(row['shuffled_question_id'], 'c')
+        self.assertEqual(row['shuffled_questions_excluded_answer_visible'], 1)
+        self.assertEqual(row['same_answer_bytes'], row['answer_bytes'])
+        self.assertGreater(row['shuffled_question_minus_correct_loss'], 5.9)
+        self.assertEqual(first['prompt_visibility']['not_visible_in_prompt']['same_answer_question_pairs'], 2)
+        self.assertIn('mean_shuffled_question_minus_correct_loss', first)
+
+    def test_all_original_cases_remain_when_no_clean_shuffled_question_exists(self):
+        records = [fact('a', 'source-a', 'target-a', 'alpha'), fact('b', 'source-b', 'target-b', 'beta')]
+        records[0]['question'] = 'Question containing beta?'
+        records[1]['question'] = 'Question containing alpha?'
+        report = evaluate_relations(self.model, {'facts': {'test': records}})
+        self.assertEqual(report['cases'], 2)
+        self.assertEqual(report['same_answer_question_pairs'], 0)
+        self.assertEqual(report['shuffled_question_exclusions']['cases_without_eligible_question'], 2)
+        self.assertIsNone(report['mean_shuffled_question_minus_correct_loss'])
+        self.assertGreater(report['held_out_answer_loss'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

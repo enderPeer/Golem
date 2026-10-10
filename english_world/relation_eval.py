@@ -9,6 +9,7 @@ from collections import defaultdict
 import json
 import math
 from pathlib import Path
+import re
 
 import torch
 
@@ -17,6 +18,18 @@ from .neural_model import USER, END, ASSISTANT, encode_bytes
 
 def _lemma(value):
     return str(value).replace('_', ' ').strip().casefold()
+
+
+def _answer_visible_in_question(answer_fact, question):
+    folded = ' '.join(_lemma(question).split())
+    phrases = [answer_fact['answer']] + list(answer_fact.get('answer_lemmas', []))
+    if answer_fact.get('target_lemma'):
+        phrases.append(answer_fact['target_lemma'])
+    for phrase in phrases:
+        phrase = ' '.join(_lemma(phrase).split())
+        if phrase and re.search(r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', folded):
+            return True
+    return False
 
 
 def _graph_positives(graph, facts):
@@ -135,28 +148,78 @@ def evaluate_relations(model, dataset, split='test', max_cases=128,
                                distractor_truncated=len(encode_bytes(distractor['answer'])) > max_answer_bytes,
                                wrong_minus_correct_loss=wrong_loss - row['answer_loss'],
                                prefers_correct=row['answer_loss'] < wrong_loss)
+                # Hold the answer itself fixed and change only the question.
+                # This complements wrong-answer ranking by controlling answer
+                # frequency, spelling and byte length exactly within each pair.
+                questions = [candidate for candidate in groups[fact['relation']]
+                             if candidate['source'] != fact['source'] and candidate['question'] != fact['question']]
+                excluded_positive = excluded_visible = 0
+                eligible_questions = []
+                answer_lemmas = {_lemma(word) for word in fact.get('answer_lemmas', [])}
+                for candidate in questions:
+                    candidate_key = (candidate['relation'], candidate['source'])
+                    known_positive = (fact['target'] in positive_targets[candidate_key] or
+                                      fact['answer'].strip() in positive_answers[candidate_key])
+                    if full_positives:
+                        known = full_positives[(candidate['relation'], candidate['source'],
+                                               _lemma(candidate.get('source_lemma', '')))]
+                        known_positive = known_positive or fact['target'] in known['targets'] or bool(answer_lemmas & known['lemmas'])
+                    if known_positive:
+                        excluded_positive += 1
+                    elif _answer_visible_in_question(fact, candidate['question']):
+                        excluded_visible += 1
+                    else:
+                        eligible_questions.append(candidate)
+                row.update(shuffled_question_id=None, shuffled_question_candidates=len(questions),
+                           shuffled_questions_excluded_known_positive=excluded_positive,
+                           shuffled_questions_excluded_answer_visible=excluded_visible,
+                           shuffled_question_minus_correct_loss=None)
+                if eligible_questions:
+                    shuffled = min(eligible_questions, key=lambda candidate:
+                        (abs(len(encode_bytes(candidate['question'])) - len(encode_bytes(fact['question']))), candidate['id']))
+                    shuffled_nll, shuffled_count = score(shuffled['question'], fact['answer'])
+                    # Both calls score exactly the same capped answer bytes.
+                    if shuffled_count != count:
+                        raise RuntimeError('same-answer comparison changed the scored answer length')
+                    shuffled_loss = shuffled_nll / count
+                    row.update(shuffled_question_id=shuffled['id'], shuffled_question_source=shuffled['source'],
+                               same_answer_shuffled_question_loss=shuffled_loss,
+                               same_answer_bytes=count,
+                               shuffled_question_truncated=len(encode_bytes(shuffled['question'])) > max_prompt_bytes,
+                               shuffled_question_minus_correct_loss=shuffled_loss - row['answer_loss'])
+                else:
+                    row['shuffled_question_unavailable'] = (
+                        'no same-relation different-source question' if not questions else
+                        'all alternatives are known positives or expose the correct answer')
                 rows.append(row)
     finally:
         model.train(was_training)
     answer_bytes = sum(row['answer_bytes'] for row in rows)
     nll = sum(row['answer_nll'] for row in rows)
     contrasts = [row for row in rows if row['distractor_id'] is not None]
+    question_pairs = [row for row in rows if row['shuffled_question_id'] is not None]
     per_relation = {}
     for relation in sorted({row['relation'] for row in rows}):
         selected = [row for row in rows if row['relation'] == relation]
         paired = [row for row in selected if row['distractor_id'] is not None]
+        question_paired = [row for row in selected if row['shuffled_question_id'] is not None]
         per_relation[relation] = {
             'cases': len(selected), 'contrast_cases': len(paired),
             'answer_loss': sum(row['answer_nll'] for row in selected) / sum(row['answer_bytes'] for row in selected),
             'fraction_preferring_correct': sum(row['prefers_correct'] for row in paired) / len(paired) if paired else None,
+            'same_answer_question_pairs': len(question_paired),
+            'mean_shuffled_question_minus_correct_loss': sum(row['shuffled_question_minus_correct_loss'] for row in question_paired) / len(question_paired) if question_paired else None,
         }
     visibility = {}
     for label, visible in (('visible_in_prompt', True), ('not_visible_in_prompt', False)):
         selected = [row for row in rows if row['answer_visible_in_prompt'] == visible]
         paired = [row for row in selected if row['distractor_id'] is not None]
+        question_paired = [row for row in selected if row['shuffled_question_id'] is not None]
         visibility[label] = {'cases': len(selected), 'contrast_cases': len(paired),
             'answer_loss': sum(row['answer_nll'] for row in selected) / sum(row['answer_bytes'] for row in selected) if selected else None,
-            'fraction_preferring_correct': sum(row['prefers_correct'] for row in paired) / len(paired) if paired else None}
+            'fraction_preferring_correct': sum(row['prefers_correct'] for row in paired) / len(paired) if paired else None,
+            'same_answer_question_pairs': len(question_paired),
+            'mean_shuffled_question_minus_correct_loss': sum(row['shuffled_question_minus_correct_loss'] for row in question_paired) / len(question_paired) if question_paired else None}
     return {'schema': 'golem-relation-evaluation-v1', 'split': split, 'cases': len(rows),
             'answer_bytes': answer_bytes, 'held_out_answer_loss': nll / answer_bytes,
             'truncated_answers': sum(row['answer_truncated'] for row in rows),
@@ -165,8 +228,16 @@ def evaluate_relations(model, dataset, split='test', max_cases=128,
             'contrast_cases': len(contrasts),
             'fraction_preferring_correct': sum(row['prefers_correct'] for row in contrasts) / len(contrasts) if contrasts else None,
             'mean_wrong_minus_correct_loss': sum(row['wrong_minus_correct_loss'] for row in contrasts) / len(contrasts) if contrasts else None,
+            'same_answer_question_pairs': len(question_pairs),
+            'mean_shuffled_question_minus_correct_loss': sum(row['shuffled_question_minus_correct_loss'] for row in question_pairs) / len(question_pairs) if question_pairs else None,
+            'shuffled_question_exclusions': {
+                'known_positive_candidates': sum(row['shuffled_questions_excluded_known_positive'] for row in rows),
+                'answer_visible_candidates': sum(row['shuffled_questions_excluded_answer_visible'] for row in rows),
+                'cases_without_eligible_question': len(rows) - len(question_pairs),
+                'counting': 'Candidate exclusions counted separately for each original query; all original cases remain in answer-loss metrics.'},
             'per_relation': per_relation, 'prompt_visibility': visibility, 'rows': rows,
             'retrieval_used_by_model': False, 'generation_overridden': False,
             'full_graph_used_only_to_exclude_valid_distractors': graph_path is not None,
             'distractor_policy': 'Same held-out partition and relation type; different source sense, known positives excluded, nearest answer length.',
-            'interpretation': 'Descriptive teacher-forced answer likelihood and contrast. Frequency, answer wording and incomplete relation coverage can affect it; this is not generated-answer accuracy.'}
+            'shuffled_question_policy': 'Same answer bytes under a different-source, same-relation held-out question; known positive questions and questions exposing the correct answer excluded; nearest question length, then stable ID.',
+            'interpretation': 'Descriptive teacher-forced likelihood contrasts, not generated-answer accuracy. Same-answer question pairs control answer frequency and wording; template structure and incomplete relation coverage can still affect them.'}
