@@ -64,7 +64,7 @@ def response_relevance(model, dataset, split="test", max_cases=32, prompt_bytes=
             "interpretation": "Descriptive prompt-sensitivity diagnostic; not proof that generated answers are relevant or correct."}
 
 
-def ternary_export(checkpoint, dataset, output_dir, split="validation", batches=8):
+def ternary_export(checkpoint, dataset, output_dir, split="validation", batches=8, already_ternary=False):
     """Export packed matrix payloads and measure post-training ternary accuracy.
 
     Runtime still uses the separately saved float reference, never the packed file.
@@ -75,7 +75,25 @@ def ternary_export(checkpoint, dataset, output_dir, split="validation", batches=
         raise ValueError("Ternary output directory must be new or empty")
     directory.mkdir(parents=True, exist_ok=True)
     model, metadata = load_neural_checkpoint(checkpoint)
-    quantized, report = clone_ternary(model)
+    if already_ternary:
+        quantized = model
+        matrices = []
+        for name, parameter in model.named_parameters():
+            if parameter.ndim != 2 or not (name.startswith('gru.weight_') or name == 'output.weight'):
+                continue
+            value = parameter.detach()
+            scale = value.abs().max()
+            if not torch.isfinite(value).all() or not ((value == 0) | (value == scale) | (value == -scale)).all():
+                raise ValueError(f"Matrix is not exactly ternary with one scale: {name}")
+            matrices.append({"name": name, "shape": list(value.shape), "elements": value.numel(),
+                             "scale": float(scale), "zeros": int((value == 0).sum()),
+                             "negative": int((value < 0).sum()), "positive": int((value > 0).sum())})
+        report = {"method": "pack_existing_ternary_reference", "native_bitnet": False,
+                  "packed_storage": False, "compute": "floating_point_reference", "matrices": matrices,
+                  "quantized_parameters": sum(m["elements"] for m in matrices),
+                  "note": "Existing ternary scales are preserved exactly; no second quantization is applied."}
+    else:
+        quantized, report = clone_ternary(model)
     docs = prepare_documents(dataset, split)
     cfg = {"batch_size": 4, "sequence_length": 128}
     report["evaluation"] = {"split": split,

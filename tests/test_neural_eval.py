@@ -45,6 +45,18 @@ class NeuralDiagnosticTests(unittest.TestCase):
         self.assertAlmostEqual(report["shuffled_minus_actual_loss"],
                                report["shuffled_prompt_loss"] - report["actual_prompt_loss"])
 
+    def test_existing_ternary_export_preserves_original_scales(self):
+        from english_world.neural_eval import ternary_export
+        from english_world.neural_model import ByteGRULM, NeuralConfig, clone_ternary, save_neural_checkpoint
+        model, expected = clone_ternary(ByteGRULM(NeuralConfig(embedding_dim=5, hidden_size=7, num_layers=1)))
+        data = {"texts": {"validation": ["user: test\nassistant: test passed"]}}
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "model.pt"
+            save_neural_checkpoint(checkpoint, model)
+            report = ternary_export(checkpoint, data, Path(directory) / "packed", batches=1, already_ternary=True)
+            self.assertTrue(report["exact_packed_roundtrip"])
+            self.assertEqual([m["scale"] for m in report["matrices"]], [m["scale"] for m in expected["matrices"]])
+
     def test_interactive_chat_keeps_special_role_tokens(self):
         from english_world.cli import main
         from english_world.neural_model import ByteGRULM, NeuralConfig, USER, ASSISTANT

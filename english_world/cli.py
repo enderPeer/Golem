@@ -61,6 +61,12 @@ def print_json(value):
     print(json.dumps(value, indent=2, ensure_ascii=True))
 
 
+def terminal_text(value):
+    """Show model output as text without interpreting terminal control bytes."""
+    return ''.join(c if c in '\n\t' or (ord(c) >= 32 and not 127 <= ord(c) < 160)
+                   else f'\\x{ord(c):02x}' for c in value)
+
+
 def doctor(_args):
     total, used, free = shutil.disk_usage(Path.cwd())
     print_json({
@@ -104,7 +110,7 @@ def neural(args):
         torch.set_num_threads(args.threads)
         data = load_neural_corpus(args.data)
         if args.neural_command == "quantize":
-            result = ternary_export(args.checkpoint, data, args.output, split=args.split)
+            result = ternary_export(args.checkpoint, data, args.output, split=args.split, already_ternary=args.already_ternary)
         else:
             model, _metadata = load_neural_checkpoint(args.checkpoint)
             result = response_relevance(model, data, split=args.split, max_cases=args.cases)
@@ -114,14 +120,21 @@ def neural(args):
                 path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print_json(result)
         return 0
+    if args.neural_command == "qat":
+        from .neural_corpus import load_neural_corpus
+        from .neural_quantization import train_ternary
+        config = load_config(args.config)
+        config["threads"] = args.threads
+        print_json(train_ternary(args.checkpoint, load_neural_corpus(args.data), args.run_dir, config))
+        return 0
     if args.neural_command == "chat":
         from .neural_model import ASSISTANT, END, USER, encode_bytes, generate_neural, load_neural_checkpoint
         torch.set_num_threads(args.threads)
         model, metadata = load_neural_checkpoint(args.checkpoint, map_location="cpu")
         model.eval()
         if args.prompt is not None:
-            print(generate_neural(model, args.prompt, max_new_tokens=args.max_bytes,
-                                  temperature=args.temperature, seed=args.seed, dialogue=True))
+            print(terminal_text(generate_neural(model, args.prompt, max_new_tokens=args.max_bytes,
+                                               temperature=args.temperature, seed=args.seed, dialogue=True)))
             return 0
         print("Project Golem — experimental recurrent neural model")
         print("New randomly initialized model trained on project data; general chat quality must be measured.")
@@ -149,9 +162,7 @@ def neural(args):
                 prompt = (history + user_turn)[-args.context_bytes:]
                 answer = generate_neural(model, prompt, max_new_tokens=args.max_bytes,
                                          temperature=args.temperature, seed=args.seed + turn, dialogue=True)
-                printable = ''.join(c if c in '\n\t' or (ord(c) >= 32 and not 127 <= ord(c) < 160)
-                                    else f'\\x{ord(c):02x}' for c in answer)
-                print("golem> " + printable)
+                print("golem> " + terminal_text(answer))
                 history = (prompt + encode_bytes(answer) + [END])[-args.context_bytes:]
                 turn += 1
         return 0
@@ -373,7 +384,16 @@ def parser():
         np.add_argument("--threads", type=bounded_int(1, 2), default=2)
         if name == "relevance":
             np.add_argument("--cases", type=bounded_int(2, 256), default=32)
+        else:
+            np.add_argument("--already-ternary", action="store_true", help="Pack verified ternary weights without quantizing them again")
         np.set_defaults(func=neural)
+    np = ncommands.add_parser("qat", help="Bounded ternary-forward fine-tuning of an existing neural checkpoint")
+    np.add_argument("--checkpoint", required=True)
+    np.add_argument("--data", default="data/neural-dialogue/dataset.json")
+    np.add_argument("--run-dir", default="runs/neural-qat")
+    np.add_argument("--config", default="configs/neural-qat.toml")
+    np.add_argument("--threads", type=bounded_int(1, 2), default=2)
+    np.set_defaults(func=neural)
     np = ncommands.add_parser("chat")
     np.add_argument("--checkpoint", required=True)
     np.add_argument("--prompt")

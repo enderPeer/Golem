@@ -58,3 +58,7 @@ Neural launchers use an isolated user service, two-core CPU quota, two Torch thr
 `./golem neural quantize --checkpoint runs/neural-compare/ordinary_champion.pt --output runs/neural-ternary` writes genuinely packed matrix payloads plus residual floating-point tensors and quantization scales. It verifies exact recovery of the quantized matrices and compares validation loss. The separately saved `ternary-reference.pt` runs through floating-point PyTorch; packed execution is not implemented.
 
 `./golem neural relevance --checkpoint runs/neural-compare/ordinary_champion.pt` compares held-out answer likelihood with its actual user prompt and a shuffled user prompt. This is a descriptive prompt-sensitivity test, not a human relevance or factual-correctness score.
+
+`bash ops/run_neural.sh qat` performs a separate bounded adaptation of the ordinary checkpoint. It keeps floating-point master weights, uses ternary GRU/output matrix values during forward passes, and uses a straight-through gradient estimator. The embedding and biases remain floating point. This is additional quantization-aware fine-tuning, not native BitNet pretraining or an equal-compute comparison against the original checkpoint. Test data is excluded from the QAT training/selection procedure.
+
+The selected `runs/neural-qat/qat-reference.pt` already contains ternary matrices with their learned scales. Export it using `./golem neural quantize --checkpoint runs/neural-qat/qat-reference.pt --output runs/neural-qat-packed --already-ternary` to preserve those scales exactly.

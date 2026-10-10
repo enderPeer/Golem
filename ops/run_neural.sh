@@ -7,9 +7,14 @@ case "$MODE" in
     memory) CONFIG=configs/neural-memory.toml; LIMIT=270 ;;
     benchmark) CONFIG=configs/neural-pilot.toml; LIMIT=180 ;;
     compare) CONFIG=configs/neural-pilot.toml; LIMIT=1230 ;;
-    *) printf 'Usage: bash ops/run_neural.sh [benchmark|compare|memory] [RUN_DIR]\n' >&2; exit 2 ;;
+    qat) CONFIG=configs/neural-qat.toml; LIMIT=210 ;;
+    *) printf 'Usage: bash ops/run_neural.sh [benchmark|compare|memory|qat] [RUN_DIR] [QAT_CHECKPOINT]\n' >&2; exit 2 ;;
 esac
 RUN_DIR="${2:-runs/neural-$MODE}"
+EXTRA=()
+if [[ "$MODE" == qat ]]; then
+    EXTRA=(--checkpoint "${3:-runs/neural-compare/ordinary_champion.pt}")
+fi
 test -x .venv-neural/bin/python || { printf 'Create .venv-neural and install requirements-neural.txt first.\n' >&2; exit 1; }
 UNIT="golem-neural-$MODE-$(date -u +%Y%m%dT%H%M%S)-$$"
 systemd-run --user --collect --unit="$UNIT" \
@@ -24,5 +29,5 @@ systemd-run --user --collect --unit="$UNIT" \
     --setenv=OPENBLAS_NUM_THREADS=2 --setenv=CUDA_VISIBLE_DEVICES= \
     --setenv=HIP_VISIBLE_DEVICES= --setenv=ROCR_VISIBLE_DEVICES= \
     "$PROJECT_ROOT/.venv-neural/bin/python" "$PROJECT_ROOT/ops/neural_guard.py" "$MODE" \
-        --config "$CONFIG" --data data/neural-dialogue/dataset.json --run-dir "$RUN_DIR"
+        --config "$CONFIG" --data data/neural-dialogue/dataset.json --run-dir "$RUN_DIR" "${EXTRA[@]}"
 printf 'Started: %s.service\nStatus: ./golem neural status --run-dir %s\n' "$UNIT" "$RUN_DIR"

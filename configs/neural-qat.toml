@@ -1,0 +1,10 @@
+# Additional adaptation, not an equal-budget comparison with the FP32 checkpoint.
+seed = 43
+threads = 2
+max_updates = 200
+batch_size = 4
+sequence_length = 128
+learning_rate = 0.0003
+max_seconds = 180
+validation_batches = 8
+evaluate_every = 50

@@ -12,11 +12,12 @@ from ops.worker_guard import budget_check, contained, preflight, stop_worker
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("benchmark", "compare", "memory"))
+    parser.add_argument("mode", choices=("benchmark", "compare", "memory", "qat"))
     parser.add_argument("--config", required=True)
     parser.add_argument("--data", default="data/neural-dialogue/dataset.json")
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--checkpoint")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     config = contained(root, args.config, must_exist=True)
@@ -34,6 +35,11 @@ def main():
         command += ["--data", str(data)]
     if args.resume:
         command.append("--resume")
+    if args.mode == "qat":
+        if not args.checkpoint:
+            parser.error("QAT requires --checkpoint")
+        checkpoint = contained(root, args.checkpoint, must_exist=True)
+        command += ["--checkpoint", str(checkpoint)]
     preflight(root)
     child = subprocess.Popen(command, cwd=root, start_new_session=True)
     def stop(signum, frame):
