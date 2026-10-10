@@ -6,6 +6,8 @@ A separate evolutionary English world, with reproducible experiments and a termi
 
 The optional **neural backend** adds a 791,300-parameter GRU trained from scratch, a delayed-memory test, and a four-candidate hybrid evolutionary comparison. It intentionally uses gradient learning inside candidates. The legacy table worlds remain mutation-only. See [neural Golem](docs/neural.md) and [research boundaries](docs/research-boundaries.md).
 
+[First measured results](docs/first-neural-results.md): synthetic recall passed, ordinary training beat the evolutionary pilot, and ternary-aware adaptation recovered much of the quantization loss. General conversational ability and low-power hardware performance remain unestablished.
+
 ## Run without installing anything
 
 Python 3.11 or newer is sufficient; the CPU implementation has no third-party runtime dependencies.

@@ -375,6 +375,10 @@ def compare(config, data, run_dir, resume=False):
                 arm['cpu_seconds'] += time.process_time() - cpu
                 arm['wall_seconds'] += time.monotonic() - wall
                 if arm['updates'] % config['checkpoint_every'] == 0:
+                    cpu, wall = time.process_time(), time.monotonic()
+                    _export_best(arm, config, directory / (name + '_champion.pt'))
+                    arm['cpu_seconds'] += time.process_time() - cpu
+                    arm['wall_seconds'] += time.monotonic() - wall
                     _persist(state, directory)
             cpu, wall = time.process_time(), time.monotonic()
             _export_best(arm, config, directory / (name + '_champion.pt'))

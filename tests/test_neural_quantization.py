@@ -106,6 +106,33 @@ class NeuralQuantizationTests(unittest.TestCase):
             # the parameters are bit-exact above, outputs agree to FP32 tolerance.
             self.assertTrue(torch.allclose(wrapper(self.inputs)[0], reference(self.inputs)[0], atol=1e-7, rtol=1e-6))
 
+    def test_time_limit_after_unevaluated_update_still_saves_masters_and_best(self):
+        data = {'texts': {'train': ['train only. ' * 3], 'validation': ['held out. ' * 3]}}
+        elapsed = [False]
+        real_batch = qat.sample_batch
+
+        def training_batch(*args, **kwargs):
+            batch = real_batch(*args, **kwargs)
+            elapsed[0] = True
+            return batch
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source.pt'
+            save_neural_checkpoint(source, self.model)
+            with patch.object(qat, 'sample_batch', side_effect=training_batch), \
+                 patch.object(qat.time, 'monotonic', side_effect=lambda: 181. if elapsed[0] else 0.):
+                report = qat.train_ternary(source, data, Path(directory) / 'run',
+                    {'max_updates': 200, 'batch_size': 2, 'sequence_length': 12,
+                     'validation_batches': 1, 'threads': 1})
+            self.assertEqual(report['status'], 'time_limit')
+            self.assertEqual(report['updates'], 1)
+            self.assertEqual(report['best_update'], 0)
+            checkpoint = torch.load(Path(directory) / 'run' / 'qat-training.pt', weights_only=True)
+            self.assertEqual(checkpoint['updates'], 1)
+            self.assertTrue(checkpoint['optimizer_state']['state'])
+            _, metadata = load_neural_checkpoint(Path(directory) / 'run' / 'qat-reference.pt')
+            self.assertEqual(metadata['best_update'], 0)
+
     def test_nonfinite_or_unsafe_budgets_rejected(self):
         for change in ({'learning_rate': float('nan')}, {'max_seconds': 181}, {'threads': 3}):
             with self.subTest(change=change), self.assertRaises(ValueError):

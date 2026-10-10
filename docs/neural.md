@@ -47,6 +47,8 @@ Test data is used only after both arms have finished, on validation-selected che
 
 The default comparison has four rounds, so actual inheritance occurs. A four-update pipeline benchmark has only one round and does not establish evolutionary benefit.
 
+`bash ops/run_neural.sh language` runs a longer 4,800-update-per-arm comparison in `runs/neural-language`, with twelve population rounds and a 20-minute training-session cap. Current validation-selected champions are published at checkpoints, so terminal inference can use a coherent saved snapshot while training continues. Reaching the time limit before both arms finish means the comparison is incomplete; resume it explicitly rather than treating unequal work as a result.
+
 ## Resource policy
 
 Neural launchers use an isolated user service, two-core CPU quota, two Torch threads, 8 GiB RAM, low CPU/I/O priority and the same 20 GiB project disk monitor. The existing one-hour English job can continue separately. GPU compatibility probes are separate from the CPU-matched experiment and never silently change its execution backend.
