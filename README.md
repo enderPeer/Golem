@@ -8,6 +8,8 @@ The optional **neural backend** adds a 791,300-parameter GRU trained from scratc
 
 [First measured results](docs/first-neural-results.md): synthetic recall passed, ordinary training beat the evolutionary pilot, and ternary-aware adaptation recovered much of the quantization loss. General conversational ability and low-power hardware performance remain unestablished.
 
+The [dictionary relation graph](docs/relations.md) adds WordNet meanings, typed relations, connectivity rankings, graph exports, and a separate supervised relation-training corpus. Querying the dictionary and testing what the neural model learned are separate commands.
+
 ## Run without installing anything
 
 Python 3.11 or newer is sufficient; the CPU implementation has no third-party runtime dependencies.
