@@ -43,7 +43,7 @@ def main():
         if not torch.isfinite(loss) or not all(torch.isfinite(p.grad).all() for p in gpu.parameters() if p.grad is not None):
             raise RuntimeError("Nonfinite GPU training result")
         optimizer.step()
-        losses.append(float(loss))
+        losses.append(float(loss.detach()))
     torch.cuda.synchronize()
     report = {"schema": "golem-gpu-compatibility-v1", "device": name, "torch": torch.__version__,
               "hip": torch.version.hip, "parameters": gpu.parameter_count,

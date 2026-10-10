@@ -97,6 +97,23 @@ def neural(args):
         import torch
     except ImportError as exc:
         raise ValueError("Neural commands need the isolated PyTorch runtime; see requirements-neural.txt and docs/neural.md.") from exc
+    if args.neural_command in ("quantize", "relevance"):
+        from .neural_corpus import load_neural_corpus
+        from .neural_eval import response_relevance, ternary_export
+        from .neural_model import load_neural_checkpoint
+        torch.set_num_threads(args.threads)
+        data = load_neural_corpus(args.data)
+        if args.neural_command == "quantize":
+            result = ternary_export(args.checkpoint, data, args.output, split=args.split)
+        else:
+            model, _metadata = load_neural_checkpoint(args.checkpoint)
+            result = response_relevance(model, data, split=args.split, max_cases=args.cases)
+            if args.output:
+                path = Path(args.output)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print_json(result)
+        return 0
     if args.neural_command == "chat":
         from .neural_model import ASSISTANT, END, USER, encode_bytes, generate_neural, load_neural_checkpoint
         torch.set_num_threads(args.threads)
@@ -347,6 +364,16 @@ def parser():
     np = ncommands.add_parser("status")
     np.add_argument("--run-dir", default="runs/neural-compare")
     np.set_defaults(func=neural)
+    for name in ("quantize", "relevance"):
+        np = ncommands.add_parser(name)
+        np.add_argument("--checkpoint", required=True)
+        np.add_argument("--data", default="data/neural-dialogue/dataset.json")
+        np.add_argument("--split", choices=("validation", "test"), default="validation")
+        np.add_argument("--output", required=name == "quantize")
+        np.add_argument("--threads", type=bounded_int(1, 2), default=2)
+        if name == "relevance":
+            np.add_argument("--cases", type=bounded_int(2, 256), default=32)
+        np.set_defaults(func=neural)
     np = ncommands.add_parser("chat")
     np.add_argument("--checkpoint", required=True)
     np.add_argument("--prompt")

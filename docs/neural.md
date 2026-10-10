@@ -54,3 +54,7 @@ Neural launchers use an isolated user service, two-core CPU quota, two Torch thr
 ## Low-bit scope
 
 `./golem ternary-check` verifies two-bit packing, signed-int8 inputs and int32 accumulation against exact integer arithmetic. Neural model utilities also provide a **post-training ternary clone** for accuracy experiments. This clone still executes floating-point operations. It is not native BitNet training, a packed inference kernel, or an FPGA/PIM accelerator. See [research boundaries](research-boundaries.md) for the evidence needed to make hardware or open-ended-evolution claims.
+
+`./golem neural quantize --checkpoint runs/neural-compare/ordinary_champion.pt --output runs/neural-ternary` writes genuinely packed matrix payloads plus residual floating-point tensors and quantization scales. It verifies exact recovery of the quantized matrices and compares validation loss. The separately saved `ternary-reference.pt` runs through floating-point PyTorch; packed execution is not implemented.
+
+`./golem neural relevance --checkpoint runs/neural-compare/ordinary_champion.pt` compares held-out answer likelihood with its actual user prompt and a shuffled user prompt. This is a descriptive prompt-sensitivity test, not a human relevance or factual-correctness score.
