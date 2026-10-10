@@ -351,12 +351,13 @@ def _evolve_population(strategy, models, optimizers, config, device, round_numbe
             fraction = config['weight_noise_rms_fraction']
             rms = max(float(parameter.detach().float().square().mean().sqrt()), 1e-6)
             generator = torch.Generator(device='cpu').manual_seed(rng.randrange(2**63))
-            noise = torch.randn(parameter.shape, generator=generator, dtype=torch.float32).to(device)
+            noise = torch.randn(parameter.shape, generator=generator, dtype=torch.float32).clamp_(-3., 3.).to(device)
             with torch.no_grad():
                 parameter.add_(noise.to(parameter.dtype), alpha=rms * fraction)
             reset_names.add(name)
             operators.append({'operator': 'bounded_weight_noise', 'parameter': name,
-                              'rms_fraction': fraction, 'noise_std': rms * fraction})
+                              'rms_fraction': fraction, 'noise_std': rms * fraction,
+                              'maximum_absolute_delta': 3. * rms * fraction})
         for name, parameter in models[child_slot].named_parameters():
             if name in reset_names:
                 optimizers[child_slot].state.pop(parameter, None)
@@ -496,6 +497,7 @@ def _report(state, directory):
                   environment=state['environment'], intent_document_counts=state['intent_document_counts'],
                   gene_bounds=GENE_BOUNDS, selection_rule='lexicographic generated rubric score, then negative assistant NLL',
                   budget_claim='Equal configured optimizer updates, processed training tokens and validation requests per strategy. Curricula can change supervised targets; generation lengths and total device/CPU/wall work are measured, not claimed equal.',
+                  timing_scope='Per-strategy initialization, restore, training, evaluation, genetic operators and periodic/live-publication writes. Shared input preparation and final serialization are outside these counters; GPU wall timings synchronize the selected device.',
                   test_policy='Held-out generated-chat test and NLL evaluated only after every requested strategy finishes.',
                   determinism='CPU replay is tested; GPU/ROCm kernel determinism depends on hardware and Torch backend.')
     for name, strategy in state['strategies'].items():

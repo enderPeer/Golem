@@ -151,6 +151,59 @@ class ChatTrainingTests(unittest.TestCase):
             self.assertEqual(str(training._device(cfg)), 'cuda:0')
         self.assertEqual(calls, [('limit', .25), ('device', 'cuda:0')])
 
+    def test_cancelled_validation_is_not_selected_and_is_resumable(self):
+        cfg = {**config(), 'strategies': ['ordinary']}
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(training, '_chat_evaluate', side_effect=InterruptedError('bounded cancellation')):
+                result = training.train_chat(cfg, dataset(), directory)
+            self.assertEqual(result['status'], 'time_limit')
+            state = torch.load(Path(directory) / 'chat-training.pt', weights_only=True)['strategies']['ordinary']
+            self.assertTrue(state['evaluation_due'])
+            self.assertIsNone(state['best'])
+            self.assertEqual(state['generated_validation_calls'], 0)
+            resumed = training.train_chat(cfg, dataset(), directory, resume=True)
+            self.assertEqual(resumed['status'], 'complete')
+            self.assertEqual(resumed['strategies']['ordinary']['generated_validation_calls'], 8)
+
+    def test_cancelled_test_does_not_publish_partial_test_or_repeat_training(self):
+        cfg = {**config(), 'strategies': ['ordinary']}
+        real = training._chat_evaluate
+
+        def cancel_test(model, data, split, cfg, should_stop=None):
+            if split == 'test':
+                raise InterruptedError('test cancelled')
+            return real(model, data, split, cfg, should_stop=should_stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(training, '_chat_evaluate', side_effect=cancel_test):
+                result = training.train_chat(cfg, dataset(), directory)
+            self.assertEqual(result['status'], 'time_limit')
+            self.assertEqual(result['strategies']['ordinary']['updates'], 8)
+            self.assertIsNone(result['strategies']['ordinary']['test'])
+            resumed = training.train_chat(cfg, dataset(), directory, resume=True)
+            self.assertEqual(resumed['status'], 'complete')
+            self.assertEqual(resumed['strategies']['ordinary']['updates'], 8)
+            self.assertEqual(resumed['strategies']['ordinary']['generated_validation_calls'], 8)
+
+    def test_nonfinite_gradients_fail_before_corrupting_weights(self):
+        cfg = {**config(), 'strategies': ['ordinary']}
+        real = training._runtime
+
+        def poison(strategy, config, device):
+            models, optimizers = real(strategy, config, device)
+            models[0].output.weight.register_hook(lambda gradient: gradient * float('inf'))
+            return models, optimizers
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(training, '_runtime', side_effect=poison):
+                with self.assertRaises(RuntimeError):
+                    training.train_chat(cfg, dataset(), directory)
+            state = torch.load(Path(directory) / 'chat-training.pt', weights_only=True)
+            self.assertEqual(state['status'], 'failed')
+            strategy = state['strategies']['ordinary']
+            self.assertEqual(strategy['updates'], 0)
+            self.assertTrue(all(torch.isfinite(value).all() for value in strategy['candidates'][0]['model_state'].values()))
+
 
 if __name__ == '__main__':
     unittest.main()
