@@ -10,6 +10,8 @@ The optional **neural backend** adds a 791,300-parameter GRU trained from scratc
 
 The [dictionary relation graph](docs/relations.md) adds WordNet meanings, typed relations, connectivity rankings, graph exports, and a separate supervised relation-training corpus. Querying the dictionary and testing what the neural model learned are separate commands.
 
+The [chat-evolution experiment](docs/chat-evolution.md) trains original short conversations with ordinary, independent and genetic controls. It adds held-out paraphrase families, context-use checks and bounded cluster workers. The initial language checkpoint scored 0.0 on the 56-case chat validation diagnostic; final results for this new stage are pending. Live replies come from a saved neural checkpoint, not an answer lookup.
+
 ## Run without installing anything
 
 Python 3.11 or newer is sufficient; the CPU implementation has no third-party runtime dependencies.

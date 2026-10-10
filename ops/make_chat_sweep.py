@@ -59,6 +59,8 @@ def make_sweep(output):
             config.update(device='cpu' if kind == 'cpu' else 'cuda:0', threads=2 if kind == 'cpu' else 1,
                           batch_size=8 if kind == 'cpu' else 32,
                           max_total_updates=2400 if kind == 'cpu' else 800)
+            if host == 'falke64' and kind == 'gpu':
+                config['strategies'] = ['evolution', 'ordinary', 'independent']
             directory = output / host
             directory.mkdir(parents=True, exist_ok=True)
             config_path = directory / (identity + '.toml')

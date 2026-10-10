@@ -1,8 +1,5 @@
-param([string]$HostAlias = 'specht32')
 $ErrorActionPreference = 'Stop'
-if ($HostAlias -notin @('specht32', 'falke64', 'adler40', 'knecht24')) {
-    throw 'Choose a configured cluster alias.'
-}
-$Host.UI.RawUI.WindowTitle = 'Project Golem - neural chat'
-& ssh -t $HostAlias 'cd /home/ender/golem && ./golem neural chat --checkpoint runs/chat-live/champion.pt --temperature 0 --max-bytes 120 --context-bytes 768'
-if ($LASTEXITCODE -ne 0) { Write-Host 'The remote chat exited. Check the saved checkpoint and connection.' }
+$golemChatScript = Join-Path $PSScriptRoot 'Open-GolemChat.cmd'
+# CONIN$/CONOUT$ in the CMD wrapper ensure the new window has its own keyboard
+# and display even when its launcher inherited redirected background-tool pipes.
+Start-Process -FilePath cmd.exe -ArgumentList @('/d', '/c', ('"' + $golemChatScript + '"')) -WindowStyle Normal
