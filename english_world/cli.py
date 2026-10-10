@@ -171,13 +171,16 @@ def neural(args):
         from .neural_model import load_neural_checkpoint
         from .relation_eval import evaluate_relations
         torch.set_num_threads(args.threads)
+        checkpoint_sha = hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()
         model, _metadata = load_neural_checkpoint(args.checkpoint)
+        if hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest() != checkpoint_sha:
+            raise ValueError("Checkpoint changed while loading; retry evaluation or use a frozen copy")
         data = load_neural_input(args.data)
         result = evaluate_relations(model, data, split=args.split,
                                     max_cases=args.cases, graph_path=args.graph)
         result["provenance"] = {
             "checkpoint_name": Path(args.checkpoint).name,
-            "checkpoint_sha256": hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
+            "checkpoint_sha256": checkpoint_sha,
             "corpus_content_sha256": data.get("manifest", {}).get("content_sha256"),
             "graph_sha256": hashlib.sha256(Path(args.graph).read_bytes()).hexdigest(),
             "torch_version": str(torch.__version__),

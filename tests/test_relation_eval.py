@@ -16,6 +16,24 @@ def fact(identifier, source, target, answer, relation='hypernym'):
 
 
 class RelationEvaluationTests(unittest.TestCase):
+    def test_cli_rejects_checkpoint_replacement_during_load(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        from english_world.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'live.pt'
+            path.write_bytes(b'first checkpoint')
+            def replace_checkpoint(_path):
+                path.write_bytes(b'new checkpoint')
+                return self.model, {}
+            errors = io.StringIO()
+            with patch('english_world.neural_model.load_neural_checkpoint', side_effect=replace_checkpoint), \
+                    contextlib.redirect_stderr(errors):
+                result = main(['neural', 'relation-eval', '--checkpoint', str(path)])
+            self.assertEqual(result, 2)
+            self.assertIn('Checkpoint changed while loading', errors.getvalue())
+
     def setUp(self):
         torch.set_num_threads(1)
         torch.manual_seed(3)
