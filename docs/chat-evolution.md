@@ -241,13 +241,14 @@ all seven direct checks. Its SHA-256 is
 This selection does not establish an evolutionary advantage; those comparisons
 continue separately with their declared controls.
 
-From Windows, open the remote terminal with:
+From Windows, run this from the project checkout to open a new chat window:
 
 ```powershell
-& .\ops\Open-GolemChat.ps1
+Start-Process (Join-Path $PWD 'ops\Open-GolemChat.cmd')
 ```
 
-The wrapper creates a new console with its own keyboard/display handles and
+The CMD launcher works with PowerShell script execution disabled; no execution
+policy change is needed. The wrapper creates a new console with its own keyboard/display handles and
 connects to the saved neural checkpoint with greedy decoding. `/reload`
 loads a newly promoted artifact and clears history; `/reset` clears history
 without changing weights. The live endpoint is specht32; other hosts do not
