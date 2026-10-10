@@ -1,0 +1,10 @@
+population_size = 8
+generations = 4
+seed = 1
+max_order = 4
+max_contexts = 128
+mutation_rate = 0.8
+guided_probability = 0.7
+eval_examples = 64
+checkpoint_every = 1
+max_seconds = 60

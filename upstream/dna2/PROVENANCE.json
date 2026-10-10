@@ -1,0 +1,30 @@
+{
+  "component": "DNA-2 frozen Python reference",
+  "source_repository": "universe 2",
+  "source_commit": "f6b0499e147912f87f5cebedf90f00276accb643",
+  "source_file": "sim/dna_ref.py",
+  "vendored_file": "upstream/dna2/dna_ref.py",
+  "sha256": "51c3b4d819a1823116409fa1e226914860409a8e8276ccbf4489a5983ea9b141",
+  "license": "MIT",
+  "license_file": "upstream/dna2/LICENSE",
+  "license_sha256": "5cdbc44e43c4d3cf4988d3154b0a7b0b9715ad33bb87fec5a9a87b958314055a",
+  "modifications": [],
+  "verification": {
+    "mode": "DNA-2",
+    "seed": 1,
+    "N": 16384,
+    "G": 256,
+    "I": 16,
+    "T": 64,
+    "mu": 0,
+    "D": 0,
+    "F": 0,
+    "blank": true,
+    "genome": "ATG GCT CTT TTA GGT",
+    "n_seed": 1,
+    "ticks": 512,
+    "faithful": 471,
+    "live": 54,
+    "state_hash": "ff66e97fdaf7f31d"
+  }
+}

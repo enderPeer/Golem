@@ -1,0 +1,12 @@
+# One bounded CPU pilot. No pretrained weights or gradient updates.
+population_size = 64
+generations = 1000
+seed = 7
+max_order = 5
+max_contexts = 512
+mutation_rate = 0.8
+guided_probability = 0.7
+eval_examples = 256
+checkpoint_every = 25
+checkpoint_seconds = 60
+max_seconds = 1740
