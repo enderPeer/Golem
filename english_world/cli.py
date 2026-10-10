@@ -87,6 +87,69 @@ def ternary_check(_args):
     return 0
 
 
+def graph_command(args):
+    from .lexical_graph import build_graph, load_graph, normalize_word, rank_related, relation_path
+    from .lexical_export import export_graphml, export_neighborhood, export_rank_table, ranked_words
+    if args.graph_command == "build":
+        path = build_graph(args.output)
+        graph = load_graph(path)
+        export_rank_table(graph, Path(args.output) / "ranked-words.tsv")
+        print_json({"graph": str(path), "counts": graph["counts"], "rank_note": "Connectivity, not frequency or universal importance"})
+        return 0
+    if args.graph_command == "corpus":
+        from .relation_corpus import prepare_relation_corpus
+        path = prepare_relation_corpus(args.graph, args.output, dialogue_path=args.dialogue,
+                                       seed=args.seed, max_concepts=args.max_concepts)
+        print(f"Relation training corpus ready: {path}")
+        return 0
+    graph = load_graph(args.graph)
+    if args.graph_command == "rank":
+        print_json({"method": "WordNet connectivity PageRank aggregated over meanings", "words": ranked_words(graph, args.top)})
+    elif args.graph_command == "related":
+        senses = graph["word_index"].get(normalize_word(args.word), [])
+        if not senses:
+            raise ValueError("No exact WordNet lemma entry; try its singular/base form")
+        print_json({"word": args.word, "senses": [{"id": s, "definition": graph["nodes"][s]["definition"]} for s in senses],
+                    "score_note": "Heuristic typed relatedness, not a probability or synonym score",
+                    "related": rank_related(graph, args.word, sense=args.sense, limit=args.limit, max_depth=args.depth)})
+    elif args.graph_command == "pair":
+        result = relation_path(graph, args.first, args.second, source_sense=args.source_sense,
+                               target_sense=args.target_sense, max_hops=args.max_hops)
+        result["readable_path"] = [{"from": graph["nodes"][edge["source"]]["lemmas"],
+                                    "relation": edge["relation"],
+                                    "to": graph["nodes"][edge["target"]]["lemmas"]}
+                                   for edge in result.get("path", [])]
+        print_json(result)
+    elif args.graph_command == "export":
+        base = Path(args.graph)
+        if base.is_file():
+            base = base.parent
+        license_text = (base / "WORDNET-LICENSE.txt").read_text(encoding="utf-8")
+        if args.format == "graphml":
+            result = export_graphml(graph, args.output, license_text=license_text)
+        else:
+            result = export_neighborhood(graph, args.word, args.output, sense=args.sense,
+                                         limit=args.limit, license_text=license_text)
+        (Path(args.output).parent / "WORDNET-LICENSE.txt").write_text(license_text, encoding="utf-8")
+        print(f"Graph export: {result}")
+    return 0
+
+
+def load_neural_input(path):
+    candidate = Path(path)
+    if candidate.is_dir():
+        candidate = candidate / "dataset.json"
+    schema = read_json(candidate).get("schema")
+    if schema == "golem-neural-corpus-v1":
+        from .neural_corpus import load_neural_corpus
+        return load_neural_corpus(candidate)
+    if schema == "golem-relation-corpus-v1":
+        from .relation_corpus import load_relation_corpus
+        return load_relation_corpus(candidate)
+    from .data import load_dataset
+    return load_dataset(candidate)
+
+
 def neural(args):
     if args.neural_command == "prepare":
         from .neural_corpus import prepare_neural_corpus
@@ -103,12 +166,24 @@ def neural(args):
         import torch
     except ImportError as exc:
         raise ValueError("Neural commands need the isolated PyTorch runtime; see requirements-neural.txt and docs/neural.md.") from exc
+    if args.neural_command == "relation-eval":
+        from .neural_model import load_neural_checkpoint
+        from .relation_eval import evaluate_relations
+        torch.set_num_threads(args.threads)
+        model, _metadata = load_neural_checkpoint(args.checkpoint)
+        result = evaluate_relations(model, load_neural_input(args.data), split=args.split,
+                                    max_cases=args.cases, graph_path=args.graph)
+        if args.output:
+            path = Path(args.output)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print_json(result)
+        return 0
     if args.neural_command in ("quantize", "relevance"):
-        from .neural_corpus import load_neural_corpus
         from .neural_eval import response_relevance, ternary_export
         from .neural_model import load_neural_checkpoint
         torch.set_num_threads(args.threads)
-        data = load_neural_corpus(args.data)
+        data = load_neural_input(args.data)
         if args.neural_command == "quantize":
             result = ternary_export(args.checkpoint, data, args.output, split=args.split, already_ternary=args.already_ternary)
         else:
@@ -121,11 +196,10 @@ def neural(args):
         print_json(result)
         return 0
     if args.neural_command == "qat":
-        from .neural_corpus import load_neural_corpus
         from .neural_quantization import train_ternary
         config = load_config(args.config)
         config["threads"] = args.threads
-        print_json(train_ternary(args.checkpoint, load_neural_corpus(args.data), args.run_dir, config))
+        print_json(train_ternary(args.checkpoint, load_neural_input(args.data), args.run_dir, config))
         return 0
     if args.neural_command == "chat":
         from .neural_model import ASSISTANT, END, USER, encode_bytes, generate_neural, load_neural_checkpoint
@@ -180,15 +254,7 @@ def neural(args):
     if args.neural_command == "memory":
         result = train_memory(config, args.run_dir)
     else:
-        from .data import load_dataset
-        candidate = Path(args.data)
-        if candidate.is_dir():
-            candidate = candidate / "dataset.json"
-        if read_json(candidate).get("schema") == "golem-neural-corpus-v1":
-            from .neural_corpus import load_neural_corpus
-            data = load_neural_corpus(candidate)
-        else:
-            data = load_dataset(candidate)
+        data = load_neural_input(args.data)
         if args.neural_command == "benchmark":
             result = neural_benchmark(config, data, args.run_dir)
         else:
@@ -363,12 +429,54 @@ def parser():
     p.set_defaults(func=doctor)
     p = commands.add_parser("ternary-check", help="Verify packed ternary arithmetic against exact integer results")
     p.set_defaults(func=ternary_check)
+    p = commands.add_parser("graph", help="Dictionary relations, sense-aware ranks and training corpus")
+    gcommands = p.add_subparsers(dest="graph_command", required=True)
+    gp = gcommands.add_parser("build")
+    gp.add_argument("--output", default="data/lexicon")
+    gp.set_defaults(func=graph_command)
+    for name in ("rank", "related", "pair", "export", "corpus"):
+        gp = gcommands.add_parser(name)
+        gp.add_argument("--graph", default="data/lexicon/graph.json")
+        gp.set_defaults(func=graph_command)
+        if name == "rank":
+            gp.add_argument("--top", type=bounded_int(1, 1000), default=25)
+        elif name == "related":
+            gp.add_argument("word")
+            gp.add_argument("--sense")
+            gp.add_argument("--limit", type=bounded_int(1, 200), default=20)
+            gp.add_argument("--depth", type=bounded_int(1, 3), default=2)
+        elif name == "pair":
+            gp.add_argument("first")
+            gp.add_argument("second")
+            gp.add_argument("--source-sense")
+            gp.add_argument("--target-sense")
+            gp.add_argument("--max-hops", type=bounded_int(1, 6), default=4)
+        elif name == "export":
+            gp.add_argument("--word", default="cat")
+            gp.add_argument("--sense")
+            gp.add_argument("--limit", type=bounded_int(1, 20), default=10)
+            gp.add_argument("--format", choices=("neighborhood", "graphml"), default="neighborhood")
+            gp.add_argument("--output", required=True)
+        else:
+            gp.add_argument("--output", default="data/relations")
+            gp.add_argument("--dialogue")
+            gp.add_argument("--seed", type=int, default=23)
+            gp.add_argument("--max-concepts", type=bounded_int(10, 20000), default=6000)
     p = commands.add_parser("neural", help="Optional PyTorch neural model and controlled evolution experiments")
     ncommands = p.add_subparsers(dest="neural_command", required=True)
     np = ncommands.add_parser("prepare", help="Fetch a pinned English dialogue corpus with conversation-disjoint splits")
     np.add_argument("--output", default="data/neural-dialogue")
     np.add_argument("--seed", type=int, default=23)
     np.add_argument("--max-conversations", type=bounded_int(20, 10000), default=512)
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("relation-eval", help="Measure model likelihood on held-out dictionary facts without retrieval")
+    np.add_argument("--checkpoint", required=True)
+    np.add_argument("--data", default="data/relations/dataset.json")
+    np.add_argument("--graph", default="data/lexicon/graph.json")
+    np.add_argument("--split", choices=("validation", "test"), default="validation")
+    np.add_argument("--cases", type=bounded_int(2, 512), default=64)
+    np.add_argument("--threads", type=bounded_int(1, 2), default=1)
+    np.add_argument("--output")
     np.set_defaults(func=neural)
     for name in ("benchmark", "compare", "memory"):
         np = ncommands.add_parser(name)

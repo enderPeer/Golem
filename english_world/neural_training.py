@@ -23,7 +23,7 @@ import time
 import torch
 from torch import nn
 
-from .neural_model import ByteGRULM, NeuralConfig, save_neural_checkpoint
+from .neural_model import ByteGRULM, NeuralConfig, load_neural_checkpoint, save_neural_checkpoint
 from .neural_data import prepare_documents, sample_batch, make_recall_documents, SequenceDocument
 
 
@@ -60,6 +60,14 @@ def _hash_weights(weights):
     return digest.hexdigest()
 
 
+def _checkpoint_hash(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _config(config):
     defaults = {'max_total_updates': 20, 'population_size': 4, 'rounds': 1,
                 'batch_size': 4, 'sequence_length': 64, 'seed': 7, 'threads': 2,
@@ -70,6 +78,17 @@ def _config(config):
     result = copy.deepcopy(defaults)
     result.update(copy.deepcopy(config))
     result['model'] = {**defaults['model'], **config.get('model', {})}
+    # Optional fields stay absent for legacy runs, preserving their config and
+    # RNG behavior. Resume checks the bytes, not merely a reusable filename.
+    if result.get('init_checkpoint'):
+        source = Path(result['init_checkpoint']).expanduser()
+        if not source.is_file():
+            raise ValueError(f'initial checkpoint must be an existing file: {source}')
+        result['init_checkpoint'] = source.as_posix()
+        result['init_checkpoint_sha256'] = _checkpoint_hash(source)
+    else:
+        result.pop('init_checkpoint', None)
+        result.pop('init_checkpoint_sha256', None)
     for name, low, high in (('max_total_updates', 4, 1000000), ('population_size', 4, 4),
                             ('rounds', 1, 10000), ('batch_size', 1, 128),
                             ('sequence_length', 2, 4096), ('threads', 1, 2),
@@ -139,15 +158,38 @@ def _evaluate(model, docs, config, batches, seed):
 def _new_arm(name, config):
     candidates = []
     count = 1 if name == 'ordinary' else 4
+    initialization = None
+    source_weights = None
+    if config.get('init_checkpoint'):
+        if _checkpoint_hash(config['init_checkpoint']) != config['init_checkpoint_sha256']:
+            raise ValueError('initial checkpoint changed while preparing the comparison')
+        source, source_metadata = load_neural_checkpoint(config['init_checkpoint'])
+        if _checkpoint_hash(config['init_checkpoint']) != config['init_checkpoint_sha256']:
+            raise ValueError('initial checkpoint changed while loading the comparison')
+        expected = NeuralConfig(**config['model']).to_dict()
+        for field, value in source.config.to_dict().items():
+            if field != 'dropout' and value != expected[field]:
+                raise ValueError(f'initial checkpoint architecture mismatch: {field}')
+        source_weights = source.state_dict()
+        initialization = {'mode': 'shared_golem_checkpoint',
+                          'checkpoint_name': Path(config['init_checkpoint']).name,
+                          'checkpoint_sha256': config['init_checkpoint_sha256'],
+                          'weight_sha256': _hash_weights(source_weights),
+                          'source_metadata': source_metadata,
+                          'optimizer_reset': True, 'same_weights_for_all_candidates': True,
+                          'configured_dropout': config['model']['dropout'],
+                          'update_accounting': 'Reported optimizer updates count this experiment; prior training is identified by source metadata.'}
     for index in range(count):
         torch.manual_seed(config['seed'] + index)
         model = ByteGRULM(NeuralConfig(**config['model']))
+        if source_weights is not None:
+            model.load_state_dict(source_weights, strict=True)
         optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=config['weight_decay'])
         candidates.append({'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
                            'learning_rate': config['learning_rate'], 'dropout': config['model']['dropout'],
                            'ancestral_updates': 0, 'initial_seed': config['seed'] + index})
     torch.manual_seed(config['seed'] + 9000)
-    return {'candidates': candidates, 'updates': 0, 'next_batch_index': 0,
+    arm = {'candidates': candidates, 'updates': 0, 'next_batch_index': 0,
             'processed_training_tokens': 0, 'supervised_training_tokens': 0,
             'validation_forward_batches': 0, 'validation_processed_tokens': 0,
             'validation_supervised_tokens': 0, 'validation_history': [],
@@ -155,6 +197,9 @@ def _new_arm(name, config):
             'torch_rng_state': torch.get_rng_state(),
             'evolution_rng_state': random.Random(config['seed'] + 7000).getstate(),
             'cpu_seconds': 0., 'wall_seconds': 0., 'status': 'pending'}
+    if initialization is not None:
+        arm['initialization'] = initialization
+    return arm
 
 
 def _restore(arm, config):
@@ -185,10 +230,13 @@ def _export_best(arm, config, path):
     with torch.random.fork_rng(devices=[]):
         model = ByteGRULM(NeuralConfig(**{**config['model'], 'dropout': best['dropout']}))
         model.load_state_dict(best['model'])
-        save_neural_checkpoint(path, model, metadata={'training_schema': SCHEMA,
+        metadata = {'training_schema': SCHEMA,
             'selection_split': 'validation', 'validation': best['validation'],
             'global_updates': best['global_updates'], 'candidate': best['candidate'],
-            'weight_sha256': best['weight_sha256'], 'supervised_gradient_training': True})
+            'weight_sha256': best['weight_sha256'], 'supervised_gradient_training': True}
+        if arm.get('initialization'):
+            metadata['initialization'] = arm['initialization']
+        save_neural_checkpoint(path, model, metadata=metadata)
 
 
 def _status(state, run_dir):
@@ -287,6 +335,8 @@ def _report(state, directory):
         arms[name]['candidate_ancestral_updates'] = [candidate['ancestral_updates'] for candidate in arm['candidates']]
         arms[name]['parameters_per_model'] = sum(tensor.numel() for tensor in arm['candidates'][0]['model'].values())
         arms[name]['population_size'] = len(arm['candidates'])
+        if arm.get('initialization'):
+            arms[name]['initialization'] = arm['initialization']
     a, b = state['arms']['ordinary'], state['arms']['evolution']
     matched = {key: a[key] == b[key] for key in ('updates', 'processed_training_tokens', 'supervised_training_tokens',
                'validation_forward_batches', 'validation_processed_tokens', 'validation_supervised_tokens')}
@@ -296,7 +346,9 @@ def _report(state, directory):
             'shared_preparation_wall_seconds': state['shared_preparation_wall_seconds'],
             'compute_claim': 'Operation-matched only. Total CPU and wall time are measured, not equalized.',
             'timing_scope': 'Per-arm initialization/restore, training, validation, inheritance, export and checkpoints; test separately included after selection. Shared document preparation is separate.',
-            'control_limitations': 'PBT has four initial seeds; ordinary training uses the same seed as candidate zero. A best-of-four independent-training control is not included.',
+            'control_limitations': ('Both arms and all PBT candidates start from identical Golem checkpoint weights with fresh AdamW state. A four-member independent-training control is not included.'
+                                   if state['config'].get('init_checkpoint') else
+                                   'PBT has four initial seeds; ordinary training uses the same seed as candidate zero. A best-of-four independent-training control is not included.'),
             'test_policy': 'Each selected arm champion evaluated once, only after both arms finish.',
             'validation_loss_difference_evolution_minus_ordinary':
                 b['best']['validation']['loss'] - a['best']['validation']['loss'] if a['best'] and b['best'] else None}
@@ -318,8 +370,11 @@ def compare(config, data, run_dir, resume=False):
         if state.get('schema') != SCHEMA or state['data_fingerprint'] != fingerprint:
             raise ValueError('comparison checkpoint schema or dataset fingerprint mismatch')
         for key in config:
-            if key not in ('max_seconds', 'checkpoint_every') and config[key] != state['config'][key]:
+            if key not in ('max_seconds', 'checkpoint_every') and config[key] != state['config'].get(key):
                 raise ValueError(f'cannot change {key} while resuming comparison')
+        # A caller cannot silently remove a previous warm-start contract either.
+        if state['config'].get('init_checkpoint') and not config.get('init_checkpoint'):
+            raise ValueError('cannot remove init_checkpoint while resuming comparison')
         state['config'] = config
         if state['status'] == 'complete':
             # Recover a missing/stale report after a crash between the final

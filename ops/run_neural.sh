@@ -4,13 +4,15 @@ PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd -- "$PROJECT_ROOT"
 MODE="${1:-compare}"
 WORKER_MODE="$MODE"
+DATA=data/neural-dialogue/dataset.json
 case "$MODE" in
     memory) CONFIG=configs/neural-memory.toml; LIMIT=270 ;;
     benchmark) CONFIG=configs/neural-pilot.toml; LIMIT=180 ;;
     compare) CONFIG=configs/neural-pilot.toml; LIMIT=1230 ;;
     language) CONFIG=configs/neural-language.toml; LIMIT=1230; WORKER_MODE=compare ;;
+    relations) CONFIG=configs/neural-relations.toml; DATA=data/relations/dataset.json; LIMIT=1230; WORKER_MODE=compare ;;
     qat) CONFIG=configs/neural-qat.toml; LIMIT=210 ;;
-    *) printf 'Usage: bash ops/run_neural.sh [benchmark|compare|language|memory|qat] [RUN_DIR] [QAT_CHECKPOINT]\n' >&2; exit 2 ;;
+    *) printf 'Usage: bash ops/run_neural.sh [benchmark|compare|language|relations|memory|qat] [RUN_DIR] [QAT_CHECKPOINT]\n' >&2; exit 2 ;;
 esac
 RUN_DIR="${2:-runs/neural-$MODE}"
 EXTRA=()
@@ -31,5 +33,5 @@ systemd-run --user --collect --unit="$UNIT" \
     --setenv=OPENBLAS_NUM_THREADS=2 --setenv=CUDA_VISIBLE_DEVICES= \
     --setenv=HIP_VISIBLE_DEVICES= --setenv=ROCR_VISIBLE_DEVICES= \
     "$PROJECT_ROOT/.venv-neural/bin/python" "$PROJECT_ROOT/ops/neural_guard.py" "$WORKER_MODE" \
-        --config "$CONFIG" --data data/neural-dialogue/dataset.json --run-dir "$RUN_DIR" "${EXTRA[@]}"
+        --config "$CONFIG" --data "$DATA" --run-dir "$RUN_DIR" "${EXTRA[@]}"
 printf 'Started: %s.service\nStatus: ./golem neural status --run-dir %s\n' "$UNIT" "$RUN_DIR"

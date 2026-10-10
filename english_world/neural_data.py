@@ -85,7 +85,24 @@ def prepare_documents(dataset: dict, split: str = 'train') -> list[SequenceDocum
     texts = dataset.get('texts', {}).get(split)
     if not isinstance(texts, list) or not texts:
         raise ValueError(f'neural training requires contiguous texts for {split}, not isolated target examples')
-    documents = [document_from_text(text) for text in texts if text]
+    declared_relations = dataset.get('relation_texts', {}).get(split, [])
+    if not isinstance(declared_relations, list) or any(not isinstance(text, str) for text in declared_relations):
+        raise ValueError('relation_texts must contain lists of rendered question/answer strings')
+    fact_texts = {fact['text']: fact for fact in dataset.get('facts', {}).get(split, [])
+                  if isinstance(fact, dict) and isinstance(fact.get('text'), str)}
+    relation_texts = set(declared_relations) | set(fact_texts)
+    documents = []
+    for text in texts:
+        if not text:
+            continue
+        document = document_from_text(text)
+        if text in relation_texts:
+            if document.kind != 'dialogue':
+                raise ValueError('relation examples must retain explicit user questions and assistant answers')
+            fact = fact_texts.get(text, {})
+            document = SequenceDocument(document.tokens, document.loss_mask, 'relation',
+                {'requires_full_context': True, 'fact_id': fact.get('id'), 'relation': fact.get('relation')})
+        documents.append(document)
     if not documents:
         raise ValueError(f'no nonempty documents in {split}')
     return documents
@@ -96,8 +113,8 @@ def sample_batch(documents: list[SequenceDocument], batch_size: int, sequence_le
     """Draw document-local windows, return target-aligned masks, and pad safely.
 
     Windows are sampled by a scored target so long user-only segments cannot
-    produce an all-masked training batch. A recall document must fit in full: its
-    cue may not be silently cropped while its answer is still scored.
+    produce an all-masked training batch. Recall and relation documents must fit
+    in full: the identifying question/cue cannot be cropped while scoring answers.
     """
     if not documents or type(batch_size) is not int or batch_size < 1:
         raise ValueError('a nonempty document list and positive batch size are required')
@@ -106,8 +123,9 @@ def sample_batch(documents: list[SequenceDocument], batch_size: int, sequence_le
     inputs, targets, masks = [], [], []
     for _ in range(batch_size):
         document = rng.choice(documents)
-        if document.kind == 'recall' and len(document.tokens) > sequence_length + 1:
-            raise ValueError('sequence_length is too short to retain the entire recall cue and answer')
+        if document.kind in ('recall', 'relation') and len(document.tokens) > sequence_length + 1:
+            raise ValueError(f'sequence_length={sequence_length} is too short to retain the entire '
+                             f'{document.kind} cue and answer; need at least {len(document.tokens) - 1}')
         if len(document.tokens) <= sequence_length + 1:
             start = 0
         else:

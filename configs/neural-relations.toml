@@ -1,0 +1,24 @@
+# Dictionary-relation fine-tuning. Both arms inherit the same frozen Golem weights.
+# This is an initial bounded experiment, not a complete pass over the corpus.
+population_size = 4
+rounds = 8
+max_total_updates = 1600
+batch_size = 2
+sequence_length = 384
+seed = 47
+threads = 2
+learning_rate = 0.0005
+weight_decay = 0.01
+gradient_clip = 1.0
+validation_batches = 16
+test_batches = 64
+checkpoint_every = 100
+max_seconds = 1200
+budget_mode = "updates"
+init_checkpoint = "runs/seeds/relation-base.pt"
+
+[model]
+embedding_dim = 128
+hidden_size = 256
+num_layers = 2
+dropout = 0.1
