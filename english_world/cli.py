@@ -75,6 +75,93 @@ def doctor(_args):
     return 0
 
 
+def ternary_check(_args):
+    from .ternary import self_test
+    print_json(self_test())
+    return 0
+
+
+def neural(args):
+    if args.neural_command == "prepare":
+        from .neural_corpus import prepare_neural_corpus
+        print(f"Neural corpus ready: {prepare_neural_corpus(args.output, seed=args.seed, max_conversations=args.max_conversations)}")
+        return 0
+    if args.neural_command == "status":
+        root = Path(args.run_dir)
+        for name in ("report.json", "status.json"):
+            if (root / name).exists():
+                print_json(read_json(root / name))
+                return 0
+        raise FileNotFoundError(f"No neural report or status in {root}")
+    try:
+        import torch
+    except ImportError as exc:
+        raise ValueError("Neural commands need the isolated PyTorch runtime; see requirements-neural.txt and docs/neural.md.") from exc
+    if args.neural_command == "chat":
+        from .neural_model import ASSISTANT, END, USER, encode_bytes, generate_neural, load_neural_checkpoint
+        torch.set_num_threads(args.threads)
+        model, metadata = load_neural_checkpoint(args.checkpoint, map_location="cpu")
+        model.eval()
+        if args.prompt is not None:
+            print(generate_neural(model, args.prompt, max_new_tokens=args.max_bytes,
+                                  temperature=args.temperature, seed=args.seed, dialogue=True))
+            return 0
+        print("Project Golem — experimental recurrent neural model")
+        print("New randomly initialized model trained on project data; general chat quality must be measured.")
+        print("Commands: /info /reset /quit. History is not saved.")
+        history = []
+        turn = 0
+        while True:
+            try:
+                message = input("you> ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if message.strip() in ("/quit", "/exit"):
+                return 0
+            if message.strip() == "/reset":
+                history = []
+                turn = 0
+                print("History cleared.")
+                continue
+            if message.strip() == "/info":
+                print_json(metadata)
+                continue
+            if message.strip():
+                user_turn = [USER] + encode_bytes(message)[-args.context_bytes:] + [END, ASSISTANT]
+                prompt = (history + user_turn)[-args.context_bytes:]
+                answer = generate_neural(model, prompt, max_new_tokens=args.max_bytes,
+                                         temperature=args.temperature, seed=args.seed + turn, dialogue=True)
+                printable = ''.join(c if c in '\n\t' or (ord(c) >= 32 and not 127 <= ord(c) < 160)
+                                    else f'\\x{ord(c):02x}' for c in answer)
+                print("golem> " + printable)
+                history = (prompt + encode_bytes(answer) + [END])[-args.context_bytes:]
+                turn += 1
+        return 0
+    from .neural_training import benchmark as neural_benchmark, compare, train_memory
+    config = load_config(args.config)
+    if args.threads is not None:
+        config["threads"] = args.threads
+    if args.neural_command == "memory":
+        result = train_memory(config, args.run_dir)
+    else:
+        from .data import load_dataset
+        candidate = Path(args.data)
+        if candidate.is_dir():
+            candidate = candidate / "dataset.json"
+        if read_json(candidate).get("schema") == "golem-neural-corpus-v1":
+            from .neural_corpus import load_neural_corpus
+            data = load_neural_corpus(candidate)
+        else:
+            data = load_dataset(candidate)
+        if args.neural_command == "benchmark":
+            result = neural_benchmark(config, data, args.run_dir)
+        else:
+            result = compare(config, data, args.run_dir, resume=args.resume)
+    print_json(result)
+    return 0
+
+
 def prepare(args):
     from .data import prepare_dataset
     result = prepare_dataset(args.output, source=args.source, seed=args.seed,
@@ -239,6 +326,36 @@ def parser():
     commands = ap.add_subparsers(dest="command", required=True)
     p = commands.add_parser("doctor", help="Inspect the local runtime without changing it")
     p.set_defaults(func=doctor)
+    p = commands.add_parser("ternary-check", help="Verify packed ternary arithmetic against exact integer results")
+    p.set_defaults(func=ternary_check)
+    p = commands.add_parser("neural", help="Optional PyTorch neural model and controlled evolution experiments")
+    ncommands = p.add_subparsers(dest="neural_command", required=True)
+    np = ncommands.add_parser("prepare", help="Fetch a pinned English dialogue corpus with conversation-disjoint splits")
+    np.add_argument("--output", default="data/neural-dialogue")
+    np.add_argument("--seed", type=int, default=23)
+    np.add_argument("--max-conversations", type=bounded_int(20, 10000), default=512)
+    np.set_defaults(func=neural)
+    for name in ("benchmark", "compare", "memory"):
+        np = ncommands.add_parser(name)
+        np.add_argument("--config", default="configs/neural-memory.toml" if name == "memory" else "configs/neural-pilot.toml")
+        np.add_argument("--data", default="data/neural-dialogue/dataset.json")
+        np.add_argument("--run-dir", default=f"runs/neural-{name}")
+        np.add_argument("--threads", type=bounded_int(1, 2))
+        if name == "compare":
+            np.add_argument("--resume", action="store_true")
+        np.set_defaults(func=neural)
+    np = ncommands.add_parser("status")
+    np.add_argument("--run-dir", default="runs/neural-compare")
+    np.set_defaults(func=neural)
+    np = ncommands.add_parser("chat")
+    np.add_argument("--checkpoint", required=True)
+    np.add_argument("--prompt")
+    np.add_argument("--max-bytes", type=bounded_int(1, 2048), default=160)
+    np.add_argument("--context-bytes", type=bounded_int(1, 8192), default=2048)
+    np.add_argument("--temperature", type=positive_float, default=0.8)
+    np.add_argument("--seed", type=int, default=1)
+    np.add_argument("--threads", type=bounded_int(1, 2), default=2)
+    np.set_defaults(func=neural)
     p = commands.add_parser("prepare", help="Prepare original fixtures or public English data")
     p.add_argument("--source", choices=("fixture", "english", "self-code"), default="fixture")
     p.add_argument("--output", default="data/fixture")

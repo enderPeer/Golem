@@ -2,7 +2,9 @@
 
 A separate evolutionary English world, with reproducible experiments and a terminal interface to a saved character predictor.
 
-**Status: experimental.** This project evolves small character prediction programs and integer context tables. It is not a transformer-scale LLM, and a working chat command does not establish conversational understanding. No pretrained language model, hosted model, or gradient training supplies its responses.
+**Status: experimental.** The legacy worlds evolve small character prediction programs and integer context tables without gradients. A separate neural backend uses hybrid learning. Neither backend uses pretrained or hosted language models, and a working chat command does not establish conversational understanding.
+
+The optional **neural backend** adds a 791,300-parameter GRU trained from scratch, a delayed-memory test, and a four-candidate hybrid evolutionary comparison. It intentionally uses gradient learning inside candidates. The legacy table worlds remain mutation-only. See [neural Golem](docs/neural.md) and [research boundaries](docs/research-boundaries.md).
 
 ## Run without installing anything
 

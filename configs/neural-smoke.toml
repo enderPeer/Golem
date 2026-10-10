@@ -1,0 +1,18 @@
+population_size = 4
+rounds = 2
+max_total_updates = 16
+batch_size = 2
+sequence_length = 32
+seed = 31
+threads = 2
+learning_rate = 0.003
+validation_batches = 1
+test_batches = 1
+checkpoint_every = 4
+max_seconds = 120
+
+[model]
+embedding_dim = 16
+hidden_size = 32
+num_layers = 1
+dropout = 0.1

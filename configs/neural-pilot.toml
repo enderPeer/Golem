@@ -1,0 +1,22 @@
+# Fixed-shape operation-matched comparison: totals are PER ARM, not per candidate.
+population_size = 4
+rounds = 4
+max_total_updates = 480
+batch_size = 4
+sequence_length = 128
+seed = 31
+threads = 2
+learning_rate = 0.003
+weight_decay = 0.01
+gradient_clip = 1.0
+validation_batches = 4
+test_batches = 8
+checkpoint_every = 30
+max_seconds = 1200
+budget_mode = "updates"
+
+[model]
+embedding_dim = 128
+hidden_size = 256
+num_layers = 2
+dropout = 0.1

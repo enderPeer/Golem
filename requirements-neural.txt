@@ -1,0 +1,5 @@
+# Isolated CPU reference runtime. GPU wheels require a separate verified stack.
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch==2.14.1+cpu
+numpy==2.5.3
