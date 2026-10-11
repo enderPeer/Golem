@@ -6,4 +6,4 @@ golem text eol=lf
 *.json text eol=lf
 *.toml text eol=lf
 # Frozen reference evidence is hashed byte-for-byte, including original line endings.
-upstream/dna3/** -text
+upstream/dna3/** -text -whitespace
