@@ -226,7 +226,7 @@ It warm-starts a frozen copy of Knecht CPU-0's validation-selected checkpoint
 `225eb7b40ad630ff5961f668892061df118527ee3121bc4bc6af1d40651e3af0`.
 This checks runtime compatibility, not language improvement or energy efficiency.
 
-The current allocation is **31 active workers: 26 CPU and five GPU, with 60
+That admission brought the allocation to **31 active workers: 26 CPU and five GPU, with 60
 logical-thread quotas**. Falke's two GPU jobs stay suspended. All workers retain
 the original Monday cutoff; the new unit's independent hard stop was verified.
 The frozen seed, canary evidence and initial resumable state are copied off
@@ -235,6 +235,23 @@ Knecht's temporary storage. Admission evidence is under
 tests were deployed from commit `5a6b0cb`; its existing supervisor and trainer
 code stayed unchanged. Those three differences from its base checkout are
 intentional and recorded in `launcher-deployment.json`.
+
+At **11 October 11:03:12 UTC**, Knecht's GPU 0 was occupied by another DNA
+worker. Golem's exact CUDA service was stopped gracefully: its trainer exited,
+the unit became inactive with `MainPID=0`, and the other DNA worker continued.
+The selected checkpoint, full stage-6 recovery state and pending candidate were
+preserved. Five training stages had completed before the sixth was interrupted
+to yield the resource; the supervisor's closed-stage counter includes that
+interrupted stage.
+
+The current allocation is **30 active workers: 26 CPU and four GPU, with 59
+logical-thread quotas**. Knecht's GPU worker joins the two Falke GPU workers in
+`suspended_jobs`. Keep all three suspended while their GPUs are occupied, and
+include their checkpoints and pending candidates in final collection. Resumption
+requires a fresh availability check, the same configuration and the same Monday
+deadline. The remaining training workers and the user's experimental chat preview
+were not changed. Evidence is under `runs/reviews/20261011T1100/`; all four host
+manifests carry the same suspension record.
 
 GPU workers have a **4,096 MiB host `MemoryMax`**, following measured probe RSS
 of 2.35–2.93 GiB. CPU workers have 2,048 MiB limits, except Falke's three workers
