@@ -344,6 +344,33 @@ release occurs. Trial artifacts belong to
 adoption. Existing long-run configurations remain at the default weight unless
 a separate passing result justifies a recorded follow-up branch.
 
+**Result: rejected for adoption.** Four 200-update arms completed in 357.4 seconds,
+with identical paired data, sampling, token counts, parent weights and validation
+cases. Weight 4 reduced conversation scores (0.450397 → 0.432143 and
+0.446032 → 0.401587), increased detected validation false-memory claims
+(11 → 17 and 3 → 16), and left exact name recall at 0/8 in both pairs.
+Seed 3402 also exceeded the unweighted-NLL tolerance. The mask covered 1,103 and
+1,107 target bytes per arm, about 1.5% of reply tokens, so the experimental
+weight was exercised. Source files remained unchanged and TEST was not evaluated.
+The feature remains disabled at weight 1 in continuing long-run configurations;
+no trial checkpoint was released. This is a short, specific negative result,
+not a proof that names cannot be learned by a different model or curriculum.
+
+Manual inspection also found that the frozen v1 evaluator can miss name
+acknowledgments on non-name acts, such as "Okay, Kalen..." or "Okay, Bales. I'll
+use that name in this chat" when the USER supplied no name. Therefore its zero
+false-memory count is not sufficient for release. Original scores and training
+fitness remain frozen for comparability; a separate all-act name audit and
+human-readable free-conversation review are required before any live promotion.
+`python -m english_world.conversation_audit SAVED_REPORT --output NEW_AUDIT`
+writes a separate hash-linked audit without running a model or rewriting scores.
+It derives facts only from recorded USER history and checks name acknowledgments
+and guesses across every act. Flags require review and block release; a clean
+audit does not establish semantic correctness or authorize release. The audit
+flagged the two targeted pilot regressions above, while the frozen parent's
+validation and regression reports produced no name flags. Its complete
+conversation check still failed, so the parent was not released either.
+
 ### Conditional DNA-3 curriculum pilot
 
 The user authorized updating the Monday run with a DNA-3 bridge only if it helps.
