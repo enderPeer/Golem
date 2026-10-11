@@ -351,8 +351,8 @@ class WorldSupervisor:
                            ('replay_seconds', replay_seconds)):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f'{key} must be positive and finite')
-        if not 30 <= stage_seconds <= 1800 or shutdown_grace > 15 or not 1 <= max_stages <= 1000:
-            raise ValueError('stage_seconds must be 30..1800, grace <=15, and max_stages 1..1000')
+        if not 30 <= stage_seconds <= 7200 or shutdown_grace > 15 or not 1 <= max_stages <= 1000:
+            raise ValueError('stage_seconds must be 30..7200, grace <=15, and max_stages 1..1000')
         if not 1 <= replay_episodes <= 32 or not 1 <= replay_samples <= 512 or replay_seconds > 300:
             raise ValueError('replay bounds exceed the small TRAIN-only overlay budget')
         self.stage_seconds, self.grace = float(stage_seconds), float(shutdown_grace)

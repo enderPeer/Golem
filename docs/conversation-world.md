@@ -245,8 +245,10 @@ held-out assessment.
 The final report must say whether the deadline, a budget, an interruption or a
 completed plan ended the run.
 
-`ops/world_supervisor.py` runs one island as a sequence of stages of at most
-1,800 seconds. It fixes validation rollout seed 40097, teacher-forced seed 30097
+`ops/world_supervisor.py` runs one island as a sequence of stages, defaulting to
+1,800 seconds. An explicitly reviewed `stage_seconds` allocation may allow up
+to 7,200 seconds; the absolute Monday deadline still takes precedence. It fixes
+validation rollout seed 40097, teacher-forced seed 30097
 and batch size 8 unless explicitly configured otherwise. A recorded protocol hash
 covers the validation data and scoring settings; a stage with a changed protocol
 cannot replace that island's existing champion. Cross-island comparison still
@@ -279,6 +281,32 @@ complete training and validation block, then yields to the next, preserving its
 weights, optimizer and random state. Legacy checkpoint resumes retain their
 original sequential schedule unless a new experiment is explicitly created.
 This prevents repeated starvation; it does not establish identical hardware work.
+
+### Longer training trajectory experiment
+
+The 11 October morning review confirmed that teacher-1 stages 27–29 all restarted
+the same selected f7 weights with a fresh optimizer. Its selected stage-16 model
+was a 100-update checkpoint; later candidates often scored higher but made false
+name claims. This does not prove that resets caused the plateau, but motivates
+one longer optimization path alongside the existing controls.
+
+`falke64-world-trajectory-0` replaces the weaker `falke64-world-cpu-0` worker,
+retaining its three-thread quota and 1,536 MiB memory cap. It starts from frozen
+f7 weights with the same scalar recipe, gain 32, existing teacher overlay and
+default name-loss weight 1. It uses 8,000 updates per strategy and eight rounds,
+alternating 250-update blocks, within a two-hour stage window. Both strategies
+still receive 32 validation calls, so validation-history size stays bounded.
+The 31 other workers, held-out partitions, release checks and Monday deadline
+are unchanged. Previous cpu-0 artifacts are retained.
+
+Both original 1,600-update strategies together took about 862–868 seconds; a
+conservative fivefold extrapolation is about 72 minutes for the longer phase,
+not a guarantee. This branch tests a longer optimizer trajectory before the next
+best-checkpoint warm-start. It is not an isolated optimizer-reset ablation,
+an equal-total-compute comparison, or evidence of conversational improvement.
+Sampling and validation frequency also differ. It preserves full training states,
+but does not introduce exact continuation across the supervisor's stage boundaries.
+The plan is `runs/world-long-20261011/trajectory-plan-20261011T0600.json`.
 
 ### First hourly teaching experiment
 

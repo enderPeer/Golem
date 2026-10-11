@@ -53,6 +53,35 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.instance(stage_seconds=float('nan'))
 
+    def test_stage_default_and_explicit_two_hour_bounds(self):
+        deadline = datetime.fromtimestamp(time.time() + 3600, timezone.utc).isoformat()
+        default = supervisor.WorldSupervisor('base.toml', 'data.json', 'default-run', deadline,
+                                              project_root=self.root)
+        self.assertEqual(default.stage_seconds, 1800.)
+        for seconds in (30, 1800, 7200):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(self.instance(stage_seconds=seconds).stage_seconds, float(seconds))
+        for seconds in (29, 7200.1, 7201, float('inf'), float('nan')):
+            with self.subTest(seconds=seconds), self.assertRaises(ValueError):
+                self.instance(stage_seconds=seconds)
+
+    def test_two_hour_stage_is_still_clipped_to_absolute_deadline(self):
+        worker = self.instance(stage_seconds=7200)
+        worker.deadline = time.time() + 120
+        captured = {}
+        def stop_after_inspecting(command, log_path, hard_deadline, phase, helper=False):
+            captured['hard_deadline'] = hard_deadline
+            with (Path(log_path).parent / 'config.toml').open('rb') as stream:
+                captured['config'] = tomllib.load(stream)
+            worker.stop_requested = True
+            raise InterruptedError('test stops before launching any real trainer')
+        with patch.object(worker, 'resource_check'), patch.object(worker, 'run_child', side_effect=stop_after_inspecting):
+            state = worker.run()
+        self.assertEqual(captured['hard_deadline'], worker.deadline)
+        self.assertLessEqual(captured['config']['max_seconds'], 100.)
+        self.assertFalse(captured['config']['evaluate_test_on_complete'])
+        self.assertEqual(state['status'], 'interrupted')
+
     def test_expired_deadline_never_launches_child(self):
         worker = self.instance(deadline='2000-01-01T00:00:00Z')
         with patch.object(supervisor.subprocess, 'Popen') as popen:

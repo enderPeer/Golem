@@ -1,7 +1,12 @@
 """Admission for partial launches and truthful service receipt handling."""
 import json
+import contextlib
+import io
+import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -97,6 +102,74 @@ class LaunchAdmissionTests(unittest.TestCase):
             launch.plan_launch(self.manifest, self.root, 'host', 'all')
         with self.assertRaisesRegex(ValueError, 'logical CPU'):
             launch.check_admission(self.jobs, [], 4, available_memory=100 * 2**30)
+
+    def test_optional_manifest_stage_seconds_requires_bounded_integer(self):
+        for value in (30, 1800, 7200):
+            self.jobs[0]['stage_seconds'] = value
+            launch.plan_launch(self.manifest, self.root, 'host', 'cpu')
+        for value in (29, 7201, 30., True, None, '7200', float('nan')):
+            self.jobs[0]['stage_seconds'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'stage_seconds'):
+                launch.plan_launch(self.manifest, self.root, 'host', 'cpu')
+
+    def test_manifest_stage_override_and_default_are_forwarded_without_deadline_change(self):
+        self.jobs[0]['stage_seconds'] = 7200
+        for job in self.jobs:
+            job.update(python='/usr/bin/python3', minimum_free_gib=50, physical_gpu=0)
+        self.manifest['deadline_utc'] = '2026-10-12T08:00:00Z'
+        path = self.root / 'manifest.json'
+        path.write_text(json.dumps(self.manifest), encoding='utf-8')
+        real_read = Path.read_text
+        def read(instance, *args, **kwargs):
+            if str(instance).replace('\\', '/') == '/proc/meminfo':
+                return 'MemAvailable: 33554432 kB\n'
+            return real_read(instance, *args, **kwargs)
+        with patch.object(launch, '__file__', str(self.root / 'ops' / 'launch_chat_sweep.py')), \
+             patch.object(launch.socket, 'gethostname', return_value='host'), \
+             patch.object(launch.os, 'cpu_count', return_value=8), \
+             patch.object(Path, 'read_text', read), \
+             patch.dict(os.environ, {'GOLEM_STAGE_SECONDS': '9999'}), \
+             patch.object(sys, 'argv', ['launch_chat_sweep.py', '--manifest', str(path), '--kind', 'cpu']), \
+             patch.object(launch.subprocess, 'run') as run, contextlib.redirect_stdout(io.StringIO()):
+            launch.main()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual([call.kwargs['env']['GOLEM_STAGE_SECONDS'] for call in run.call_args_list], ['7200', '1800'])
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0][1], 'ops/run_world_long.sh')
+            self.assertEqual(call.args[0][-1], self.manifest['deadline_utc'])
+
+    def test_shell_stage_validation_executes_without_launching_any_service(self):
+        git_bash = Path('C:/Program Files/Git/bin/bash.exe')
+        bash = str(git_bash) if os.name == 'nt' and git_bash.is_file() else shutil.which('bash')
+        if not bash:
+            self.skipTest('Bash unavailable for the launcher validation check')
+        source = Path(launch.__file__).resolve().parent / 'run_world_long.sh'
+        script = source.read_text(encoding='utf-8')
+        syntax = subprocess.run([bash, '-n', source.as_posix()], capture_output=True, text=True)
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        # Execute the real argument/env validation prefix only. The deadline
+        # calculation and all service/file-launch side effects are excluded.
+        prefix = script.split('# Start shutdown', 1)[0]
+        isolated = self.root / 'ops' / 'validation-only.sh'
+        isolated.parent.mkdir()
+        isolated.write_text(prefix + '\nprintf "%s\\n" "$STAGE_SECONDS"\n', encoding='utf-8', newline='\n')
+        base = dict(os.environ, GOLEM_PYTHON='/usr/bin/true', GOLEM_THREADS='2', GOLEM_MEMORY_MIB='1024', GOLEM_RESUME='0')
+        base.pop('GOLEM_STAGE_SECONDS', None)
+        for value, expected in ((None, '1800'), ('30', '30'), ('7200', '7200'), ('0030', '30'),
+                                ('29', None), ('7201', None), ('30.5', None), ('nan', None),
+                                ('-30', None), ('999999999999999999', None)):
+            environment = dict(base)
+            if value is not None:
+                environment['GOLEM_STAGE_SECONDS'] = value
+            result = subprocess.run([bash, isolated.as_posix(), 'config', 'run', '2026-10-12T08:00:00Z'],
+                                    env=environment, capture_output=True, text=True)
+            with self.subTest(value=value):
+                if expected is not None:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
+                else:
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('GOLEM_STAGE_SECONDS', result.stderr)
 
 
 if __name__ == '__main__':

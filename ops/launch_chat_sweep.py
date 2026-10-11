@@ -65,6 +65,9 @@ def plan_launch(manifest, root, hostname, kind='cpu', *, receipt_inspector=None)
             raise ValueError('Invalid job thread quota')
         if type(job['memory_mib']) is not int or not 512 <= job['memory_mib'] <= 8192:
             raise ValueError('Invalid job memory quota')
+        stage_seconds = job.get('stage_seconds', 1800)
+        if type(stage_seconds) is not int or not 30 <= stage_seconds <= 7200:
+            raise ValueError('stage_seconds must be an integer in 30..7200')
         for field in ('config', 'run_dir'):
             path = (root / job[field]).resolve()
             if not path.is_relative_to(root) or path == root:
@@ -114,6 +117,7 @@ def main():
         env.update(GOLEM_PYTHON=job['python'], GOLEM_THREADS=str(job['threads']),
                    GOLEM_MEMORY_MIB=str(job['memory_mib']),
                    GOLEM_MIN_FREE_GIB=str(job['minimum_free_gib']),
+                   GOLEM_STAGE_SECONDS=str(job.get('stage_seconds', 1800)),
                    CUDA_VISIBLE_DEVICES='', HIP_VISIBLE_DEVICES='')
         if job['kind'] == 'gpu':
             # Only AMD devices were admitted by this recorded cluster inventory.
