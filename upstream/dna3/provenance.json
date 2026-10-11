@@ -1,0 +1,39 @@
+{
+  "files": {
+    "LICENSE": {
+      "bytes": 1066,
+      "sha256": "5cdbc44e43c4d3cf4988d3154b0a7b0b9715ad33bb87fec5a9a87b958314055a",
+      "source_relative_path": "LICENSE"
+    },
+    "dna3_ckpt_genes.py": {
+      "bytes": 4008,
+      "sha256": "b301f6a0b5ea58cc1401a1581d18ff86d288b562a1ad1bfce44bc51e8038fa39",
+      "source_relative_path": "tools/dna3_ckpt_genes.py"
+    },
+    "dna_ref.py": {
+      "bytes": 72847,
+      "sha256": "494da6d7a876c17b4df12474c270a88fcb5d0f0f9b2a7e84fc0244a7b0cc9ceb",
+      "source_relative_path": "sim/dna_ref.py"
+    },
+    "taskers_t102400.json": {
+      "bytes": 3297,
+      "sha256": "cd4731488dafc12adb140f7efbf2a640a72be3b8ada8083cfb8d79aef430d8d9",
+      "source_relative_path": "results/dna3/open/O6_day6/taskers_t102400.json"
+    }
+  },
+  "license": "MIT",
+  "origin": {
+    "extraction_tick": 102400,
+    "length_codons": 13,
+    "length_convention": "START included, terminating STOP excluded",
+    "observed_operation_sequence_count": 42577,
+    "observed_spelling_count": 9846,
+    "source_row": 0,
+    "world": "O6_day6"
+  },
+  "schema": "golem-dna3-source-freeze-v1",
+  "source_git_head": "421bf753ca0d8ea925e8b303e414e03a85246bb4",
+  "source_note": "Reference, extractor, extraction JSON and license copied byte-for-byte. Other upstream files were dirty; hashes identify these exact snapshots. The original large O6 checkpoint is not bundled or re-extracted.",
+  "source_workspace": "C:\\Users\\end\\Downloads\\universe 2",
+  "source_worktree_clean": false
+}

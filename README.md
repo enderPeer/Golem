@@ -14,6 +14,8 @@ The [chat-evolution experiment](docs/chat-evolution.md) trains original short co
 
 The newer [conversation-world experiment](docs/conversation-world.md) targets false-name claims, irrelevant replies and multi-turn error recovery. It combines a learned 18-class meaning head with explicit USER-only fact preprocessing and evaluates actual generated histories. The final allocation is **32 islands /160 model slots**, with the extended run planned through **12 October 2026, 10:00 CEST**; no final quality result is claimed yet.
 
+The optional [DNA-3 program bridge](english_world/program_bridge.py) extracts one explicitly bounded increment-modulo-four compute slice from a frozen observed genome. It verifies 204 answers against the original reference VM and emits deterministic Python. This is not a general genotype compiler. The [paired curriculum pilot](ops/program_bridge_pilot.py) tests whether verified program examples improve conversational validation and held-out program phrasing before any long-run adoption; it never modifies active training or evaluates the final test partition automatically.
+
 ## Run without installing anything
 
 Python 3.11 or newer is sufficient; the CPU implementation has no third-party runtime dependencies.
