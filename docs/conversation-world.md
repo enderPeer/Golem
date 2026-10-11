@@ -200,7 +200,7 @@ card. Both owned units reached `inactive`, `MainPID=0`, with checkpoints and
 pending candidates preserved; no other services were changed. Permissions did
 not allow attributing the large allocation to a particular external process.
 
-The current manifest therefore has **30 active jobs: 26 CPU and four GPU workers,
+That review left **30 active jobs: 26 CPU and four GPU workers,
 with 59 logical-thread quotas**. The two Falke GPU jobs are in `suspended_jobs`,
 outside the launcher's active `jobs` list. Keep them suspended while the card is
 occupied. If it becomes idle again before Monday, explicit reviewed resume must
@@ -209,6 +209,32 @@ deadline, then restore the manifest entries. Final collection must include both
 suspended jobs and their pending candidates. This is a resource yield, not a
 training failure or an extension of the deadline. Evidence is under
 `runs/reviews/20261011T0804/resource-yield/`; manifests on all four hosts match.
+
+At **11 October 09:10:57 UTC**, one worker, `knecht24-world-gpu0-0`, was added
+after Knecht's GPU 0 became idle. Repeated availability checks found no compute
+client on the RTX 3060 at PCI `00000000:0A:00.0`; GPUs 1 and 2 remained occupied.
+Its CUDA visibility is pinned to UUID
+`GPU-5a30c18a-c75e-c22a-7663-74f2eb24a91d`, with HIP visibility empty. The launcher
+now supports an explicit CUDA backend and full GPU UUID, while older GPU entries
+retain their HIP default. Both Windows and Linux launcher tests passed.
+
+The isolated CUDA canary completed eight updates per strategy with TEST deferred
+in 35.6 training seconds, using about 1.64 GiB peak process RSS. The continuing
+worker uses one CPU thread, a 4 GiB host-memory cap, a 2 GiB PyTorch allocation
+limit, batch size 16 and 800 updates per strategy within each 1,800-second stage.
+It warm-starts a frozen copy of Knecht CPU-0's validation-selected checkpoint
+`225eb7b40ad630ff5961f668892061df118527ee3121bc4bc6af1d40651e3af0`.
+This checks runtime compatibility, not language improvement or energy efficiency.
+
+The current allocation is **31 active workers: 26 CPU and five GPU, with 60
+logical-thread quotas**. Falke's two GPU jobs stay suspended. All workers retain
+the original Monday cutoff; the new unit's independent hard stop was verified.
+The frozen seed, canary evidence and initial resumable state are copied off
+Knecht's temporary storage. Admission evidence is under
+`runs/reviews/20261011T0901/`. Only Knecht's launcher, shell wrapper and launcher
+tests were deployed from commit `5a6b0cb`; its existing supervisor and trainer
+code stayed unchanged. Those three differences from its base checkout are
+intentional and recorded in `launcher-deployment.json`.
 
 GPU workers have a **4,096 MiB host `MemoryMax`**, following measured probe RSS
 of 2.35–2.93 GiB. CPU workers have 2,048 MiB limits, except Falke's three workers
