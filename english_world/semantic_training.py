@@ -12,6 +12,7 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 import signal
 import threading
 import time
@@ -40,7 +41,8 @@ def _config(config):
          'validation_batches': 4, 'validation_episodes': 16, 'test_episodes': 32,
          'evaluate_test_on_complete': True, 'strategy_schedule': 'round_robin',
          'learning_rate': .0005, 'dropout': .1, 'weight_decay': .01, 'gradient_clip': 1.,
-         'intent_loss_weight': 1., 'first_response_weight': 3., 'meaning_condition_gain': 1., 'replace_count': 2,
+         'intent_loss_weight': 1., 'first_response_weight': 3., 'meaning_condition_gain': 1.,
+         'verified_name_weight': 1., 'replace_count': 2,
          'evolve_curriculum': True, 'model': NeuralConfig().to_dict()}
     c.update(copy.deepcopy(config))
     c['model'] = {**NeuralConfig().to_dict(), **config.get('model', {})}
@@ -54,6 +56,8 @@ def _config(config):
     c.setdefault('validation_batch_size', c['batch_size'])
     if type(c['evaluate_test_on_complete']) is not bool:
         raise ValueError('evaluate_test_on_complete must be a boolean')
+    if isinstance(c['verified_name_weight'], bool):
+        raise ValueError('verified_name_weight must be a finite number in 1..8')
     for name in ('validation_seed', 'validation_nll_seed'):
         if type(c[name]) is not int:
             raise ValueError(f'{name} must be an integer')
@@ -67,7 +71,7 @@ def _config(config):
             raise ValueError(f'{key} must be an integer in {low}..{high}')
     for key in ('max_seconds', 'checkpoint_seconds', 'gpu_memory_limit_gib', 'learning_rate',
                 'dropout', 'weight_decay', 'gradient_clip', 'intent_loss_weight', 'first_response_weight',
-                'meaning_condition_gain'):
+                'meaning_condition_gain', 'verified_name_weight'):
         c[key] = float(c[key])
         if not math.isfinite(c[key]) or c[key] < 0:
             raise ValueError(f'{key} must be finite and nonnegative')
@@ -76,6 +80,8 @@ def _config(config):
             raise ValueError(f'{key} outside bounded recipe range')
     if not 1. <= c['meaning_condition_gain'] <= 64.:
         raise ValueError('meaning_condition_gain must be in 1..64')
+    if not 1. <= c['verified_name_weight'] <= 8.:
+        raise ValueError('verified_name_weight must be in 1..8')
     if c['max_seconds'] > 86400 or not 0 < c['checkpoint_seconds'] <= 3600 or not 0 < c['gpu_memory_limit_gib'] <= 256 or c['gradient_clip'] <= 0:
         raise ValueError('invalid runtime, checkpoint, GPU memory or gradient budget')
     if c['max_total_updates'] % (4 * c['rounds']):
@@ -123,6 +129,28 @@ def _validation_protocol(data, config):
     return protocol, hashlib.sha256(json.dumps(protocol, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
+def _verified_name_mask(turns, reply, act):
+    """Exact USER-grounded name bytes in a current name-act reply, plus false END.
+
+    Apostrophes and hyphens continue a name: Ana is not Ana-Maria or O'Ana.
+    Character spans are translated to byte offsets in the ORIGINAL UTF-8 reply;
+    neither case folding nor Unicode normalization changes the target text.
+    """
+    mask = [False] * (len(reply.encode('utf-8')) + 1)
+    if act not in ('name_set', 'name_correction', 'name_recall_known'):
+        return mask
+    from .dialogue_state import extract_user_facts
+    name = extract_user_facts(turns)['user_name']
+    if name is None:
+        return mask
+    expression = r"(?<![\w'\u2019-])" + re.escape(name) + r"(?![\w'\u2019-])"
+    for match in re.finditer(expression, reply):
+        start = len(reply[:match.start()].encode('utf-8'))
+        end = len(reply[:match.end()].encode('utf-8'))
+        mask[start:end] = [True] * (end - start)
+    return mask
+
+
 def encode_samples(data, split, config):
     samples = data.get('samples', {}).get(split)
     if not isinstance(samples, list) or not samples:
@@ -146,7 +174,8 @@ def encode_samples(data, split, config):
         if len(targets) > config['max_reply_tokens']:
             raise ValueError(f'current reply exceeds max_reply_tokens={config["max_reply_tokens"]}')
         encoded.append({'prefix': prefix, 'targets': targets, 'act': expected_meaning,
-                        'id': sample.get('id'), 'act_name': act})
+                        'id': sample.get('id'), 'act_name': act,
+                        'verified_name_mask': _verified_name_mask(sample['turns'], reply, act)})
     return encoded
 
 
@@ -157,12 +186,20 @@ def make_batch(samples, device='cpu'):
     prefix = torch.full((len(samples), maximum_prefix), PAD, dtype=torch.long, device=device)
     targets = torch.full((len(samples), maximum_reply), PAD, dtype=torch.long, device=device)
     mask = torch.zeros((len(samples), maximum_reply), dtype=torch.bool, device=device)
+    name_mask = torch.zeros_like(mask)
     for index, row in enumerate(samples):
         prefix[index, :len(row['prefix'])] = torch.tensor(row['prefix'], device=device)
         targets[index, :len(row['targets'])] = torch.tensor(row['targets'], device=device)
         mask[index, :len(row['targets'])] = True
+        names = row.get('verified_name_mask')
+        if names is not None:
+            if len(names) != len(row['targets']) or any(type(value) is not bool for value in names):
+                raise ValueError('verified_name_mask must contain one boolean per target token')
+            if any(mark and token == END for mark, token in zip(names, row['targets'])):
+                raise ValueError('verified_name_mask must not include END')
+            name_mask[index, :len(names)] = torch.tensor(names, dtype=torch.bool, device=device)
     return {'prefix': prefix, 'prefix_lengths': torch.tensor([len(row['prefix']) for row in samples]),
-            'reply_inputs': targets[:, :-1], 'targets': targets, 'mask': mask,
+            'reply_inputs': targets[:, :-1], 'targets': targets, 'mask': mask, 'verified_name_mask': name_mask,
             'acts': torch.tensor([row['act'] for row in samples], dtype=torch.long, device=device)}
 
 
@@ -173,6 +210,14 @@ def joint_loss(model, batch, recipe, first_response_bytes=8):
     mask = batch['mask'].float()
     weights = mask.clone()
     weights[:, :first_response_bytes] *= recipe['first_response_weight']
+    name_weight = recipe.get('verified_name_weight', 1.)
+    if name_weight != 1.:
+        # Preserve the old arithmetic exactly at weight 1. The extra factor is
+        # relative emphasis within the existing weighted-mean normalization.
+        names = batch.get('verified_name_mask')
+        if names is not None:
+            selected = names & batch['mask']
+            weights = torch.where(selected, weights * name_weight, weights)
     reply_loss = (errors * mask).sum() / mask.sum()
     weighted_reply = (errors * weights).sum() / weights.sum()
     meaning_loss = nn.functional.cross_entropy(meaning_logits, batch['acts'])
@@ -184,7 +229,7 @@ def joint_loss(model, batch, recipe, first_response_bytes=8):
 
 
 def _recipe(config, acts):
-    return {**{key: config[key] for key in ('learning_rate', 'dropout', 'intent_loss_weight', 'first_response_weight')},
+    return {**{key: config[key] for key in ('learning_rate', 'dropout', 'intent_loss_weight', 'first_response_weight', 'verified_name_weight')},
             'act_weights': {act: 1. for act in sorted(acts)}}
 
 
@@ -319,7 +364,7 @@ def _summary(state, directory):
                             else 'deferred until the long-run deadline; test is not prepared, evaluated or used for selection'),
             'memory_policy': MEMORY_POLICY, 'strategies': strategies, 'error': state.get('error'),
             'selection_rule': 'Zero observed validation false-memory claims first; generated conversation score, episode success, then lower current-reply NLL.',
-            'supervision': 'Current reference reply plus act only; extra weight on initial current-reply bytes. No previous assistant token loss. Decoder conditioned on predicted soft acts only.',
+            'supervision': 'Current reference reply plus act only; extra weight on initial current-reply bytes. Optional verified_name_weight adds relative weighted-mean emphasis to exact USER-grounded name bytes only in name_set/name_correction/name_recall_known replies. Unweighted reply NLL is unchanged. No previous assistant token loss. Decoder conditioned on predicted soft acts only.',
             'budget_claim': 'Completed strategies receive the same optimizer-update and validation-request budgets. Interrupted strategies may receive unequal work; actual updates, tokens and CPU/wall time are reported. Evolved curricula can change lengths, so total compute is not asserted equal.'}
 
 
@@ -430,6 +475,7 @@ def train_semantic(config, data, run_dir, resume=False):
             legacy_default = {'evaluate_test_on_complete': True,
                               'strategy_schedule': 'sequential',
                               'meaning_condition_gain': 1.,
+                              'verified_name_weight': 1.,
                               'validation_seed': state['config']['seed'] + 40000,
                               'validation_nll_seed': state['config']['seed'] + 30000,
                               'validation_batch_size': state['config']['batch_size']}.get(key)

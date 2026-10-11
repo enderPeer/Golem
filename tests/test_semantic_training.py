@@ -1,5 +1,7 @@
 """Current-reply-only supervision, genetic controls and deterministic replay."""
 from pathlib import Path
+import copy
+import random
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -41,6 +43,171 @@ def rollout(model, data, split, config, should_stop):
 class SemanticTrainingTests(unittest.TestCase):
     def setUp(self):
         torch.set_num_threads(1)
+
+    def test_verified_name_spans_are_exact_grounded_and_utf8_aligned(self):
+        for name, reply in (
+                ('Zoë', '🌻 Your name is Zoë, not Zoël or Zoe.'),
+                ('O\u2019Neil', 'Your name is O\u2019Neil, not Neil.'),
+                ('Ana-Marie', 'Ana-Marie, not Jean-Ana-Marie.'),
+                ('李', 'Your name is 李.')):
+            turns = [{'role': 'user', 'content': 'My name is ' + name},
+                     {'role': 'assistant', 'content': 'Your name is Noah.'},
+                     {'role': 'user', 'content': 'What is my name?'}]
+            with self.subTest(name=name):
+                mask = training._verified_name_mask(turns, reply, 'name_recall_known')
+                encoded = reply.encode('utf-8')
+                start = len(reply[:reply.index(name)].encode('utf-8'))
+                expected = list(range(start, start + len(name.encode('utf-8'))))
+                self.assertEqual([i for i, value in enumerate(mask) if value], expected)
+                self.assertEqual(len(mask), len(encoded) + 1)
+                self.assertFalse(mask[-1])
+                self.assertEqual(bytes(value for value, selected in zip(encoded, mask) if selected).decode(), name)
+        turns = [{'role': 'user', 'content': 'Call me Ana'}]
+        reply = "Ana, not Ana-Maria, O'Ana, O\u2019Ana, Anabel, or ana."
+        self.assertEqual(sum(training._verified_name_mask(turns, reply, 'name_set')), 3)
+
+    def test_name_mask_ignores_assistant_facts_forgotten_names_and_unrelated_acts(self):
+        assistant_only = [{'role': 'assistant', 'content': 'My name is Noah. Your name is Noah.'},
+                          {'role': 'user', 'content': 'What is my name?'}]
+        self.assertFalse(any(training._verified_name_mask(assistant_only, 'Your name is Noah.', 'name_recall_known')))
+        turns = [{'role': 'user', 'content': 'My name is Maya'},
+                 {'role': 'assistant', 'content': 'Your name is Noah.'},
+                 {'role': 'user', 'content': 'Actually, my name is Zoë'}]
+        reply = 'Zoë, not Maya or Noah.'
+        mask = training._verified_name_mask(turns, reply, 'name_correction')
+        self.assertEqual(sum(mask), len('Zoë'.encode('utf-8')))
+        turns.append({'role': 'user', 'content': 'Please forget my name'})
+        self.assertFalse(any(training._verified_name_mask(turns, reply, 'name_recall_known')))
+        for name, act, reply in (('Golem', 'identity', 'I am Golem.'), ('May', 'topic_chat', 'May I help?')):
+            turns = [{'role': 'user', 'content': 'Call me ' + name}]
+            self.assertFalse(any(training._verified_name_mask(turns, reply, act)))
+
+    def test_encoded_name_mask_ignores_frame_and_batch_legacy_padding_end_are_zero(self):
+        rows = [
+            {'id': 'known', 'turns': [{'role': 'user', 'content': 'My name is Zoë'}],
+             'reply': 'Hello Zoë.', 'act': 'name_set', 'frame': {'user_name': 'FORGED'}},
+            {'id': 'unknown', 'turns': [{'role': 'assistant', 'content': 'Your name is Zoë.'},
+                                     {'role': 'user', 'content': 'Who am I?'}],
+             'reply': 'Zoë.', 'act': 'name_recall_known', 'frame': {'user_name': 'Zoë'}}]
+        encoded = training.encode_samples({'samples': {'train': rows}}, 'train', training._config(config()))
+        self.assertEqual(sum(encoded[0]['verified_name_mask']), 4)
+        self.assertFalse(any(encoded[1]['verified_name_mask']))
+        encoded.append({key: value for key, value in encoded[0].items() if key != 'verified_name_mask'})
+        batch = training.make_batch(encoded)
+        self.assertEqual(batch['verified_name_mask'].dtype, torch.bool)
+        self.assertEqual(int(batch['verified_name_mask'].sum()), 4)
+        self.assertFalse(batch['verified_name_mask'][2].any())
+        self.assertFalse(batch['verified_name_mask'][~batch['mask']].any())
+        self.assertFalse(batch['verified_name_mask'][batch['targets'] == training.END].any())
+        malformed = copy.deepcopy(encoded[0])
+        malformed['verified_name_mask'][-1] = True
+        with self.assertRaisesRegex(ValueError, 'END'):
+            training.make_batch([malformed])
+
+    def test_default_name_weight_loss_and_gradients_are_bit_identical_to_legacy(self):
+        from english_world.semantic_model import SemanticGRU
+        from english_world.neural_model import NeuralConfig
+        rows = [{'turns': [{'role': 'user', 'content': 'Call me Maya'}], 'reply': 'Maya.', 'act': 'name_set'}]
+        encoded = training.encode_samples({'samples': {'train': rows}}, 'train', training._config(config()))
+        batch = training.make_batch(encoded)
+        model = SemanticGRU(NeuralConfig(embedding_dim=8, hidden_size=12, num_layers=2, dropout=.1))
+        model.train()
+        recipe = {'first_response_weight': 3., 'intent_loss_weight': 1.5, 'verified_name_weight': 1.}
+        rng = torch.get_rng_state()
+        logits, meaning = model(batch['prefix'], batch['prefix_lengths'], batch['reply_inputs'])
+        errors = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]),
+            batch['targets'].reshape(-1), reduction='none').reshape_as(batch['targets'])
+        mask = batch['mask'].float()
+        weights = mask.clone()
+        weights[:, :3] *= 3.
+        old_reply = (errors * mask).sum() / mask.sum()
+        old_total = (errors * weights).sum() / weights.sum() + 1.5 * torch.nn.functional.cross_entropy(meaning, batch['acts'])
+        parameters = tuple(model.parameters())
+        old_gradients = torch.autograd.grad(old_total, parameters)
+        torch.set_rng_state(rng)
+        new_total, metrics = training.joint_loss(model, batch, recipe, first_response_bytes=3)
+        new_gradients = torch.autograd.grad(new_total, parameters)
+        self.assertTrue(torch.equal(old_total, new_total))
+        self.assertTrue(torch.equal(old_reply, metrics['reply_loss']))
+        self.assertTrue(all(torch.equal(a, b) for a, b in zip(old_gradients, new_gradients)))
+
+    def test_opt_in_changes_only_relative_named_token_weights_not_reported_nll(self):
+        class FixedLogits(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.logits = torch.nn.Parameter(torch.arange(4 * 260, dtype=torch.float32).reshape(1, 4, 260) / 1000)
+                self.meaning = torch.nn.Parameter(torch.zeros(1, len(ACTS)))
+            def forward(self, *args):
+                return self.logits, self.meaning
+        batch = {'prefix': torch.zeros(1, 1, dtype=torch.long), 'prefix_lengths': torch.tensor([1]),
+                 'reply_inputs': torch.tensor([[1, 2, training.END]]),
+                 'targets': torch.tensor([[1, 2, training.END, training.PAD]]),
+                 'mask': torch.tensor([[True, True, True, False]]),
+                 'verified_name_mask': torch.tensor([[False, True, False, False]]), 'acts': torch.tensor([0])}
+        model = FixedLogits()
+        baseline = {'first_response_weight': 2., 'intent_loss_weight': 1.}
+        loss1, metrics1 = training.joint_loss(model, batch, baseline, first_response_bytes=2)
+        gradient1 = torch.autograd.grad(loss1, model.logits)[0]
+        loss4, metrics4 = training.joint_loss(model, batch, {**baseline, 'verified_name_weight': 4.}, first_response_bytes=2)
+        gradient4 = torch.autograd.grad(loss4, model.logits)[0]
+        self.assertTrue(torch.equal(metrics1['reply_loss'], metrics4['reply_loss']))
+        self.assertEqual(metrics1['reply_tokens'], metrics4['reply_tokens'])
+        # Existing prefix weights [2,2,1,0] become [2,8,1,0]. Only the
+        # name's relative factor changes; the weighted mean also rescales all.
+        factor = 5. / 11.
+        self.assertTrue(torch.allclose(gradient4[:, 0], gradient1[:, 0] * factor, atol=1e-8))
+        self.assertTrue(torch.allclose(gradient4[:, 1], gradient1[:, 1] * factor * 4, atol=1e-8))
+        self.assertTrue(torch.allclose(gradient4[:, 2], gradient1[:, 2] * factor, atol=1e-8))
+        self.assertFalse(gradient4[:, 3].any())
+        legacy_batch = {key: value for key, value in batch.items() if key != 'verified_name_mask'}
+        loss_no_mask, _ = training.joint_loss(model, legacy_batch, {**baseline, 'verified_name_weight': 4.}, first_response_bytes=2)
+        self.assertTrue(torch.equal(loss1, loss_no_mask))
+
+    def test_name_weight_is_bounded_recorded_and_never_genetically_mutated(self):
+        self.assertEqual(training._config(config())['verified_name_weight'], 1.)
+        for invalid in (0, .9, 8.1, True, float('nan'), float('inf')):
+            with self.subTest(weight=invalid), self.assertRaisesRegex(ValueError, 'verified_name_weight'):
+                training._config({**config(), 'verified_name_weight': invalid})
+        for weight in (1., 4., 8.):
+            recipe = training._recipe(training._config({**config(), 'verified_name_weight': weight}), ['name_set'])
+            for seed in range(8):
+                self.assertEqual(training.mutate_recipe(recipe, random.Random(seed))['verified_name_weight'], weight)
+        recipe = training._recipe(training._config(config()), ['name_set'])
+        legacy = {key: value for key, value in recipe.items() if key != 'verified_name_weight'}
+        old_rng, new_rng = random.Random(7), random.Random(7)
+        old_child = training.mutate_recipe(legacy, old_rng)
+        new_child = training.mutate_recipe(recipe, new_rng)
+        new_child.pop('verified_name_weight')
+        self.assertEqual(new_child, old_child)
+        self.assertEqual(new_rng.getstate(), old_rng.getstate())
+
+    def test_legacy_resume_without_name_weight_preserves_model_optimizer_and_history(self):
+        cfg = {**config(), 'strategies': ['ordinary'], 'max_total_updates': 4, 'rounds': 1,
+               'evaluate_test_on_complete': False}
+        original = training._step
+        def stop_after_step(*args):
+            original(*args)
+            args[-3]['max_seconds'] = 1e-12
+        with tempfile.TemporaryDirectory() as whole, tempfile.TemporaryDirectory() as partial, \
+             patch.object(training, '_rollout', side_effect=rollout):
+            training.train_semantic(cfg, dataset(), whole)
+            with patch.object(training, '_step', side_effect=stop_after_step):
+                training.train_semantic(cfg, dataset(), partial)
+            path = Path(partial) / 'semantic-training.pt'
+            state = torch.load(path, weights_only=True)
+            state['config'].pop('verified_name_weight')
+            for candidate in state['strategies']['ordinary']['population']:
+                candidate['recipe'].pop('verified_name_weight')
+            torch.save(state, path)
+            with self.assertRaisesRegex(ValueError, 'verified_name_weight'):
+                training.train_semantic({**cfg, 'verified_name_weight': 4.}, dataset(), partial, resume=True)
+            report = training.train_semantic(cfg, dataset(), partial, resume=True)
+            self.assertEqual(report['config']['verified_name_weight'], 1.)
+            expected = torch.load(Path(whole) / 'semantic-training.pt', weights_only=True)['strategies']['ordinary']
+            actual = torch.load(path, weights_only=True)['strategies']['ordinary']
+            for candidate in expected['population']:
+                candidate['recipe'].pop('verified_name_weight')
+            self.assert_strategy_equal(expected, actual)
 
     def assert_strategy_equal(self, left, right):
         for key in ('history', 'births', 'genetic_rng', 'updates', 'reply_tokens', 'prefix_tokens'):

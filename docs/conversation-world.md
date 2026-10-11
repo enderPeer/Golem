@@ -312,6 +312,38 @@ be combined against the pristine base; their separate hashes and source models
 are recorded, and duplicate sample IDs are included once. The original corpus,
 validation and test partitions remain fixed.
 
+### Targeted verified-name loss pilot
+
+The 11 October 05:03 Berlin review found a new selected checkpoint
+`f7ac80b0f238bbb601b258b13af9d354c8ba8f10fde96cae123c9c7e28f12574`.
+It classified all 122 turns in a TRAIN diagnostic correctly, but made 21 detected
+false-memory claims. Its fixed validation selection contained eight known-name
+recall cases across four names, with no correct actual recall assertions. This
+motivates an isolated loss-weighting experiment, not a live-chat promotion.
+
+`verified_name_weight` defaults to 1 and accepts 1..8. It weights only exact
+UTF-8 bytes of the current explicit USER-provided name in current reference
+replies for `name_set`, `name_correction` and `name_recall_known`. Assistant claims,
+forgotten names, old names, unrelated replies, END and padding receive no extra
+weight. It does not insert names into generated answers or change inference.
+Weight 1 preserves the previous loss and gradients; ordinary reported reply NLL
+is unweighted for comparable validation. The genetic operator does not mutate
+this experimental setting.
+
+`ops/name_copy_pilot.py` compares weights 1 and 4 from that frozen parent, using
+the same existing teacher overlay, data, sample stream, batch size eight, one
+CPU thread and 200 updates per arm for each of seeds 3401 and 3402. Both pairs
+must improve conversation score by at least 0.02, keep false-memory claims at
+zero, protect episode completion, regression replies and unweighted NLL, and
+improve exact name recall by at least 0.10 against both the paired baseline and
+parent on the same eight existing validation cases. Those cases are correlated;
+one additional correct answer is 12.5 percentage points. Nearby seeds also have
+shifted overlapping sample streams. No final TEST evaluation or automatic live
+release occurs. Trial artifacts belong to
+`runs/name-copy-pilot-20261011T0307/trial/`; a four-update canary cannot authorize
+adoption. Existing long-run configurations remain at the default weight unless
+a separate passing result justifies a recorded follow-up branch.
+
 ### Conditional DNA-3 curriculum pilot
 
 The user authorized updating the Monday run with a DNA-3 bridge only if it helps.
