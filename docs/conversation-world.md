@@ -312,6 +312,51 @@ be combined against the pristine base; their separate hashes and source models
 are recorded, and duplicate sample IDs are included once. The original corpus,
 validation and test partitions remain fixed.
 
+### Conditional DNA-3 curriculum pilot
+
+The user authorized updating the Monday run with a DNA-3 bridge only if it helps.
+The isolated pilot is recorded under
+`runs/program-bridge-pilot-20261011T0210/`, with its four-arm result in
+`trial/pilot-report.json`. It is separate from the 32 continuing world workers.
+No adoption is authorized by infrastructure tests or by the four-update canary.
+
+`english_world/program_bridge.py` verifies one noncontiguous compute slice of
+the observed 13-codon O6 increment organism. The unchanged, byte-pinned DNA-3
+reference executes all four inputs and repeated calls in three bounded contexts,
+for 204 checked answers, including parent division and both SENSE branches.
+An explicit input adapter supplies the arguments. This establishes the slice
+under its recorded reset/resource contract, not arbitrary genome compilation or
+correctness in every ecological state. Its deterministic Python export has truth
+table `[1, 2, 3, 0]`. The complete-ABI certificate hash is
+`e19271827816c7400b9889aefcfca2ab7fcc7563aef02f2813bb7673e936260d`.
+
+The pilot's frozen parent is
+`c3a7c783a04bc77ad3337af2693b078d0379429b049da2331bd990e54f79f416`, with
+meaning-conditioning gain 32. Seeds 1701 and 1702 each receive 200 updates in both
+the baseline and mixed arms, batch size eight, with the same existing teacher
+overlay and source recipe. A separate deterministic mask replaces 10% of sampled
+examples in the mixed arm with verified program requests; realized exposure and
+token work are reported. The paired base sample streams and masks are checked.
+Actual hardware work is measured, not assumed equal from update counts.
+
+There are 32 program training requests and 16 probes from disjoint phrasing
+families. Both contain the same four inputs; probe success is not evidence of
+general arithmetic. The original conversation validation/test data stay fixed,
+and the final TEST partition remains deferred until Monday. Conversation
+validation alone selects each trial checkpoint; program probes are measured
+after selection.
+
+Adoption requires both complete paired seeds to pass every predeclared gate:
+conversation score improvement of at least 0.02 over their paired baseline,
+zero observed false-memory claims, no episode-pass or regression degradation,
+reply loss within 0.02 of baseline and no worse than the frozen parent, and no
+other frozen-parent conversation regression. Program phrasing accuracy must
+improve by at least 0.10, reach at least 75%, and include a correct answer for
+each of the four inputs. Repeating a constant answer cannot pass. A failed,
+incomplete or mixed result leaves the continuing language curriculum unchanged;
+do not relax these gates after reading results. A passing result permits a fresh,
+explicitly recorded training branch, not automatic live-chat replacement.
+
 The supervisor starts helpers and training in owned process groups and never
 signals unrelated jobs. It has a 15-second shutdown reserve before the absolute
 UTC deadline. The actual `run_world_long.sh` launcher also sets an independent
