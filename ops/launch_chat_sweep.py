@@ -15,6 +15,47 @@ def launch_modes(manifest):
     return world, world and manifest.get('mode') == 'supervised_until_deadline'
 
 
+def device_visibility(job):
+    """Expose only the GPU explicitly admitted for this job, if any."""
+    visibility = {'CUDA_VISIBLE_DEVICES': '', 'HIP_VISIBLE_DEVICES': ''}
+    if job['kind'] not in ('cpu', 'gpu'):
+        raise ValueError('Invalid job device kind')
+    if job['kind'] == 'gpu':
+        backend = job.get('gpu_backend', 'hip')
+        if backend not in ('cuda', 'hip'):
+            raise ValueError('gpu_backend must be cuda or hip')
+        physical_gpu = job.get('physical_gpu')
+        if type(physical_gpu) is not int or physical_gpu < 0:
+            raise ValueError('physical_gpu must be a nonnegative integer for GPU jobs')
+        device = str(physical_gpu)
+        if 'gpu_uuid' in job:
+            if backend != 'cuda':
+                raise ValueError('gpu_uuid is allowed only for CUDA GPU jobs')
+            uuid = job['gpu_uuid']
+            if not isinstance(uuid, str) or not re.fullmatch(
+                    r'GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', uuid):
+                raise ValueError('gpu_uuid must be a complete NVIDIA GPU UUID')
+            device = uuid
+        visibility['CUDA_VISIBLE_DEVICES' if backend == 'cuda' else 'HIP_VISIBLE_DEVICES'] = device
+    elif 'gpu_uuid' in job:
+        raise ValueError('gpu_uuid is allowed only for CUDA GPU jobs')
+    return visibility
+
+
+def job_environment(job, ambient=None):
+    """Replace ambient visibility; retain unrelated runtime environment fields."""
+    env = dict(os.environ if ambient is None else ambient)
+    # These lower-level AMD filters can remap the reviewed physical index.
+    for key in ('ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL'):
+        env.pop(key, None)
+    env.update(GOLEM_PYTHON=job['python'], GOLEM_THREADS=str(job['threads']),
+               GOLEM_MEMORY_MIB=str(job['memory_mib']),
+               GOLEM_MIN_FREE_GIB=str(job['minimum_free_gib']),
+               GOLEM_STAGE_SECONDS=str(job.get('stage_seconds', 1800)))
+    env.update(device_visibility(job))
+    return env
+
+
 def inspect_receipt(root, job, receipt):
     """A receipt is an identity record, not proof its service remains healthy."""
     unit = receipt.read_text(encoding='utf-8').strip()
@@ -59,8 +100,7 @@ def plan_launch(manifest, root, hostname, kind='cpu', *, receipt_inspector=None)
     for job in jobs:
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', job['id']):
             raise ValueError('Invalid job identity')
-        if job['kind'] not in ('cpu', 'gpu'):
-            raise ValueError('Invalid job device kind')
+        device_visibility(job)
         if type(job['threads']) is not int or not 1 <= job['threads'] <= 64:
             raise ValueError('Invalid job thread quota')
         if type(job['memory_mib']) is not int or not 512 <= job['memory_mib'] <= 8192:
@@ -113,15 +153,7 @@ def main():
     for item in existing:
         print(json.dumps(item), flush=True)
     for job in pending:
-        env = dict(os.environ)
-        env.update(GOLEM_PYTHON=job['python'], GOLEM_THREADS=str(job['threads']),
-                   GOLEM_MEMORY_MIB=str(job['memory_mib']),
-                   GOLEM_MIN_FREE_GIB=str(job['minimum_free_gib']),
-                   GOLEM_STAGE_SECONDS=str(job.get('stage_seconds', 1800)),
-                   CUDA_VISIBLE_DEVICES='', HIP_VISIBLE_DEVICES='')
-        if job['kind'] == 'gpu':
-            # Only AMD devices were admitted by this recorded cluster inventory.
-            env['HIP_VISIBLE_DEVICES'] = str(job['physical_gpu'])
+        env = job_environment(job)
         command = ['bash', 'ops/run_world_long.sh' if long_run else 'ops/run_world.sh' if world else 'ops/run_chat.sh',
                    job['config'], job['run_dir']]
         if long_run:

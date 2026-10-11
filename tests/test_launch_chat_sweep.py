@@ -27,7 +27,102 @@ class LaunchAdmissionTests(unittest.TestCase):
     def job(self, name, kind, memory):
         return {'id': name, 'host': 'host', 'root': str(self.root), 'kind': kind,
                 'threads': 2 if kind == 'cpu' else 1, 'memory_mib': memory,
+                'physical_gpu': 0 if kind == 'gpu' else None,
                 'config': 'configs/' + name + '.toml', 'run_dir': 'runs/jobs/' + name}
+
+    def test_device_environment_overrides_ambient_filters_without_mutating_inputs(self):
+        ambient = {'CUDA_VISIBLE_DEVICES': '0,1,2', 'HIP_VISIBLE_DEVICES': '0,1,2',
+                   'ROCR_VISIBLE_DEVICES': '2', 'GPU_DEVICE_ORDINAL': '2',
+                   'PATH': '/reviewed/runtime/bin', 'GOLEM_THREADS': '99'}
+        original = dict(ambient)
+        for kind, backend, physical, expected in (
+                ('cpu', 'cuda', 7, ('', '')),
+                ('gpu', 'cuda', 2, ('2', '')),
+                ('gpu', 'hip', 1, ('', '1')),
+                ('gpu', None, 0, ('', '0'))):
+            job = {**self.job('island', kind, 2048), 'physical_gpu': physical,
+                   'python': '/reviewed/python', 'minimum_free_gib': 50}
+            if backend is not None:
+                job['gpu_backend'] = backend
+            before = dict(job)
+            with self.subTest(kind=kind, backend=backend):
+                env = launch.job_environment(job, ambient)
+                self.assertEqual((env['CUDA_VISIBLE_DEVICES'], env['HIP_VISIBLE_DEVICES']), expected)
+                self.assertNotIn('ROCR_VISIBLE_DEVICES', env)
+                self.assertNotIn('GPU_DEVICE_ORDINAL', env)
+                self.assertEqual(env['GOLEM_THREADS'], str(job['threads']))
+                self.assertEqual(env['PATH'], ambient['PATH'])
+                self.assertEqual(job, before)
+                self.assertEqual(ambient, original)
+
+    def test_invalid_gpu_admission_is_rejected_before_any_receipt_inspection(self):
+        for field, values in (
+                ('gpu_backend', (None, '', 'CUDA', 'rocm', 'cuda,hip', 0, True)),
+                ('physical_gpu', (None, -1, 0., '0', '0,1', True, False))):
+            for value in values:
+                self.jobs[2] = {**self.job('gpu-0', 'gpu', 4096), field: value}
+                inspect = Mock()
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, field):
+                    launch.plan_launch(self.manifest, self.root, 'host', 'gpu', receipt_inspector=inspect)
+                inspect.assert_not_called()
+        self.jobs[2] = self.job('gpu-0', 'gpu', 4096)
+        self.jobs[2].pop('physical_gpu')
+        with self.assertRaisesRegex(ValueError, 'physical_gpu'):
+            launch.plan_launch(self.manifest, self.root, 'host', 'gpu')
+
+    def test_cuda_uuid_overrides_ordinal_but_still_requires_inventory_index(self):
+        uuid = 'GPU-5a30c18a-c75e-c22a-7663-74f2eb24a91d'
+        job = {**self.job('gpu-0', 'gpu', 4096), 'gpu_backend': 'cuda',
+               'gpu_uuid': uuid, 'physical_gpu': 2}
+        self.assertEqual(launch.device_visibility(job),
+                         {'CUDA_VISIBLE_DEVICES': uuid, 'HIP_VISIBLE_DEVICES': ''})
+        for physical in (None, -1, '2', True):
+            with self.subTest(physical=physical), self.assertRaisesRegex(ValueError, 'physical_gpu'):
+                launch.device_visibility({**job, 'physical_gpu': physical})
+
+    def test_invalid_uuid_or_uuid_on_non_cuda_job_is_rejected_during_planning(self):
+        uuid = 'GPU-5a30c18a-c75e-c22a-7663-74f2eb24a91d'
+        for value in (None, True, 0, '', 'GPU-5a30c18a', uuid.lower(), uuid + ',0',
+                      uuid + '\n', uuid[:-1] + 'z', [uuid]):
+            self.jobs[2] = {**self.job('gpu-0', 'gpu', 4096), 'gpu_backend': 'cuda', 'gpu_uuid': value}
+            with self.subTest(uuid=value), self.assertRaisesRegex(ValueError, 'gpu_uuid'):
+                launch.plan_launch(self.manifest, self.root, 'host', 'gpu')
+        for kind, backend in (('gpu', 'hip'), ('gpu', None), ('cpu', 'cuda')):
+            job = {**self.job('island', kind, 2048), 'gpu_uuid': uuid}
+            if backend is not None:
+                job['gpu_backend'] = backend
+            with self.subTest(kind=kind, backend=backend), self.assertRaisesRegex(ValueError, 'gpu_uuid'):
+                launch.device_visibility(job)
+
+    def test_main_forwards_only_admitted_cuda_uuid_to_the_worker_wrapper(self):
+        uuid = 'GPU-5a30c18a-c75e-c22a-7663-74f2eb24a91d'
+        self.jobs[:] = [{**self.job('gpu-0', 'gpu', 4096), 'gpu_backend': 'cuda',
+                        'physical_gpu': 1, 'gpu_uuid': uuid, 'python': '/reviewed/python', 'minimum_free_gib': 50}]
+        self.manifest['deadline_utc'] = '2026-10-12T08:00:00Z'
+        path = self.root / 'manifest.json'
+        path.write_text(json.dumps(self.manifest), encoding='utf-8')
+        real_read = Path.read_text
+        def read(instance, *args, **kwargs):
+            if str(instance).replace('\\', '/') == '/proc/meminfo':
+                return 'MemAvailable: 33554432 kB\n'
+            return real_read(instance, *args, **kwargs)
+        with patch.object(launch, '__file__', str(self.root / 'ops' / 'launch_chat_sweep.py')), \
+             patch.object(launch.socket, 'gethostname', return_value='host'), \
+             patch.object(launch.os, 'cpu_count', return_value=8), \
+             patch.object(Path, 'read_text', read), \
+             patch.dict(os.environ, {'CUDA_VISIBLE_DEVICES': '0,2', 'HIP_VISIBLE_DEVICES': '3',
+                                     'ROCR_VISIBLE_DEVICES': '2', 'GPU_DEVICE_ORDINAL': '2'}), \
+             patch.object(sys, 'argv', ['launch_chat_sweep.py', '--manifest', str(path), '--kind', 'gpu']), \
+             patch.object(launch.subprocess, 'run') as run, contextlib.redirect_stdout(io.StringIO()):
+            launch.main()
+        run.assert_called_once()
+        env = run.call_args.kwargs['env']
+        self.assertEqual(env['CUDA_VISIBLE_DEVICES'], uuid)
+        self.assertEqual(env['HIP_VISIBLE_DEVICES'], '')
+        self.assertNotIn('ROCR_VISIBLE_DEVICES', env)
+        self.assertNotIn('GPU_DEVICE_ORDINAL', env)
+        self.assertEqual(run.call_args.args[0], ['bash', 'ops/run_world_long.sh',
+            self.jobs[0]['config'], self.jobs[0]['run_dir'], self.manifest['deadline_utc']])
 
     def receipt(self, job):
         path = self.root / 'runs/world-long-launches' / (job['id'] + '.unit')
