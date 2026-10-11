@@ -357,6 +357,29 @@ incomplete or mixed result leaves the continuing language curriculum unchanged;
 do not relax these gates after reading results. A passing result permits a fresh,
 explicitly recorded training branch, not automatic live-chat replacement.
 
+**First pilot result (11 October 2026, about 02:23 Berlin): rejected for adoption.**
+All four 200-update arms completed in 333.8 seconds; fixed sources, paired initial
+weights, base streams, masks and validation protocols were verified. Each mixed
+arm received 149/1,600 program examples (9.3125% of examples, approximately 3.67%
+of reply tokens). No TEST evaluation occurred.
+
+| Seed | Conversation score: baseline → mixed | False-memory claims: baseline → mixed | Program probes: baseline → mixed |
+|---|---|---|---|
+| 1701 | 0.387698 → 0.392989 | 0 → 8 | 0/16 → 0/16 |
+| 1702 | 0.383069 → 0.392989 | 0 → 0 | 0/16 → 0/16 |
+
+Both conversation gains fell below +0.02, both mixed candidates scored below
+the frozen parent's 0.437698, and both performed worse on known regressions than
+their paired controls. Seed 1702 also exceeded the reply-loss tolerance. The
+program answers were unrelated prose, not correct numbers rejected for formatting.
+The continuing 32-worker curriculum and live chat were therefore left unchanged.
+The bounded exporter remains verified; this short curriculum experiment does not
+rule out other integrations. Update counts matched, but token/hardware work did
+not; nearby seeds also use shifted overlapping sample streams, so the pairs are
+not independent statistical evidence. Preserve the gate and this failed result
+in future reviews rather than treating the existence of the exporter as language
+improvement.
+
 The supervisor starts helpers and training in owned process groups and never
 signals unrelated jobs. It has a 15-second shutdown reserve before the absolute
 UTC deadline. The actual `run_world_long.sh` launcher also sets an independent
