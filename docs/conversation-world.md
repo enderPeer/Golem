@@ -180,7 +180,7 @@ The requested cutoff is **Monday, 12 October 2026 at 10:00 Europe/Berlin
 or an earlier explicit stop. A resource or device failure is a recorded failure,
 not a reason to extend the deadline or use an occupied device.
 
-The final reviewed allocation has **32 islands and 160 candidate slots per
+The initial reviewed allocation has **32 islands and 160 candidate slots per
 stage**: 26 CPU workers and six GPU workers, each with one ordinary learner plus
 four evolutionary learners. This does not mean that all five candidates perform
 gradient updates simultaneously. The aggregate host CPU quotas allow **61 logical
@@ -192,6 +192,23 @@ threads**; this is a scheduling allowance, not a measured utilization figure.
 | falke64 | 3 × 3 | 2 × 1 on the admitted free R9700 | 11 |
 | adler40 | 10 × 2 | 0 | 20 |
 | knecht24 | 9 × 2 | 0 | 18 |
+
+At **11 October 08:06 UTC**, the resource review found about 29 GiB of
+non-Golem allocation on Falke's previously admitted PCI `0000:03:00.0` GPU.
+That allocation persisted after gracefully stopping Golem's two workers on the
+card. Both owned units reached `inactive`, `MainPID=0`, with checkpoints and
+pending candidates preserved; no other services were changed. Permissions did
+not allow attributing the large allocation to a particular external process.
+
+The current manifest therefore has **30 active jobs: 26 CPU and four GPU workers,
+with 59 logical-thread quotas**. The two Falke GPU jobs are in `suspended_jobs`,
+outside the launcher's active `jobs` list. Keep them suspended while the card is
+occupied. If it becomes idle again before Monday, explicit reviewed resume must
+reuse their original run directories, immutable configurations and unchanged
+deadline, then restore the manifest entries. Final collection must include both
+suspended jobs and their pending candidates. This is a resource yield, not a
+training failure or an extension of the deadline. Evidence is under
+`runs/reviews/20261011T0804/resource-yield/`; manifests on all four hosts match.
 
 GPU workers have a **4,096 MiB host `MemoryMax`**, following measured probe RSS
 of 2.35–2.93 GiB. CPU workers have 2,048 MiB limits, except Falke's three workers
@@ -307,6 +324,24 @@ an equal-total-compute comparison, or evidence of conversational improvement.
 Sampling and validation frequency also differ. It preserves full training states,
 but does not introduce exact continuation across the supervisor's stage boundaries.
 The plan is `runs/world-long-20261011/trajectory-plan-20261011T0600.json`.
+
+The first longer stage completed at **11 October 07:18 UTC**. Both strategies
+completed 8,000 updates and 32 validation calls. The ordinary-selected checkpoint
+`cdfdacc5bdeb26b269f24cfe66681f021cc1d4678bca4c03b3036401e5cc3a20`
+improved the frozen heuristic score from the parent's 0.448545 to 0.540476 and
+complete episodes from 0/24 to 4/24, but its independent name audit found 22
+unsupported claims versus zero for the parent on those validation cases.
+Evolution scored 0.520106, completed 3/24 episodes and had 28 name flags.
+Actual CPU work was about 5,328 versus 5,366 seconds, respectively; equal update
+counts are not identical computation budgets.
+
+A separate TRAIN diagnostic passed 106/122 turns and 20/32 episodes, with 16
+unsupported-name flags. The exact user regression passed only 3/7 requests:
+presence still received a farewell and assistant identity received thanks.
+These are partial task and fluency gains with worse name grounding, so the
+checkpoint was not released to live chat. The ongoing branch remains an
+experiment; TEST is still sealed. Hash-linked reports are under
+`runs/reviews/20261011T0804/trajectory/`.
 
 ### First hourly teaching experiment
 
