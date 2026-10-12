@@ -712,3 +712,54 @@ are separate outputs. TEST results never change the frozen selection. A failed
 evaluation directory is retained evidence, not an automatic resume input.
 No model is released automatically; heuristic scores and clean name audits
 alone do not demonstrate useful general conversation.
+
+## Teacher preview: practical-help regression and rejected lesson pilot
+
+On 12 October, a user-reported six-request conversation with teacher checkpoint
+`11b4a35152f21ea31cb6a3c646308b7b4fd7e0fe4a65b13d9fef6a1b8a199a59`
+began with appropriate greeting and identity replies, then produced unrelated
+farewells and thanks when asked about location, an explanation and baking help.
+The final greeting inherited the same failure. The transcript is a separately
+saved known regression, not a new held-out example or a training target.
+
+A CPU diagnostic reproduced five of six replies; the differing reply was also
+irrelevant. All contexts fit within 512 tokens. The accumulated conversation
+changed the predicted meaning of a greeting to goodbye. An explicit baking-help
+paraphrase was correctly classified as `request_help`, but its generated reply
+still offered chat practice. This is evidence of both context-sensitive meaning
+errors and inadequate response generation; forcing the top meaning label would
+not supply the missing knowledge.
+
+The TRAIN coverage audit found no baking or location questions. Its help act has
+four distinct user prompts about conversation practice and three generic target
+replies. No plain greeting-act example follows assistant history. Existing replay
+and teacher overlays reuse verified answers from this limited corpus.
+
+A separate local CPU pilot tested 24 assistant-authored TRAIN lessons covering
+uncertainty, explanation follow-ups, negative feedback, practical-help requests,
+mixed feedback/new requests and greetings after bad assistant replies. The
+lessons ask appropriate questions; they do not establish recipe knowledge.
+The original corpus, validation/test partitions and cluster jobs stayed unchanged.
+
+Both seeds, 4401 and 4402, compared ordinary continuation against the new lessons
+from identical teacher weights, gain 32 and scalar recipes. Each of the four arms
+completed 200 updates, batch size eight and eight fixed-protocol validations.
+Both arms retained the existing 89 teacher contexts. The supplement's 793
+explicit replicas occupied approximately 20% of derived TRAIN rows; actual
+ACT-uniform sampling selected them for 263 and 261 of 1,600 examples. These are
+matched update budgets, not claims of identical sampled examples or computation.
+
+Both pairs failed the predeclared adoption gate. Seed 4401 improved the broad
+validation score from 0.42751 to 0.52844, but worsened reply NLL and name behavior.
+Seed 4402 reduced that score from 0.47725 to 0.44021 and worsened reply NLL.
+The supplemented models had 11 and nine independent validation name flags,
+versus zero for the frozen parent, and still failed the practical-help request.
+No new model or curriculum was promoted into the Monday run or the chat launcher.
+The unchanged cutoff remains 08:00 UTC, and final held-out testing remains deferred.
+
+The diagnostic evidence is under `runs/reviews/20261012T0645-user-regression/`.
+The immutable lesson candidate, reviewed harness, fixed plan, full optimizer
+states, actual sampling/work counts and rejection decision are under
+`runs/user-recovery-pilot-20261012T0645/`. This small failed pilot does not establish
+that a larger curriculum would fail; it shows that this particular patch did not
+produce a reliable conversational improvement.
