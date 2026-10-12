@@ -651,3 +651,64 @@ source stage and hashes. Retain reports and selected checkpoints before pruning
 old stages. Knecht's temporary checkout must be copied to persistent storage
 before cleanup or reboot; tmpfs capacity is shared host RAM, not an independent
 storage reserve.
+
+## Final collection and evaluation
+
+The extended run ends at `2026-10-12T08:00:00Z` (10:00 Berlin). The final tools
+refuse capture, selection or evaluation before the manifest deadline. Capture
+also requires every manifest-owned unit on that host to be inactive, with no
+remaining owned child or cgroup process. These tools never stop services or
+promote a model. Leave interactive chat sessions alone.
+
+After verifying shutdown, run this on each host in its dedicated project root,
+using a fresh output directory whose parent exists:
+
+```bash
+python -B ops/world_final_collect.py capture \
+  --manifest runs/world-long-manifest.json --output runs/final-host-snapshot
+python -B ops/world_final_collect.py verify --output runs/final-host-snapshot
+```
+
+Copy each complete snapshot directory to persistent storage and verify it again
+there. In particular, Knecht's `/tmp` checkout must not be the only copy. Capture
+includes active, suspended and retired runs, full retained recovery states,
+source and corpus dependencies, original candidate bytes and per-file hashes.
+Missing pruned historical artifacts are recorded explicitly. It does not
+reconstruct missing tensors from reports or delete source files.
+
+Once all host snapshots are verified, freeze selection locally before opening
+the held-out test:
+
+```bash
+python -B ops/world_final_evaluate.py freeze \
+  --manifest runs/world-long-20261011/manifest.json \
+  --snapshot runs/final-snapshots/specht32 --snapshot runs/final-snapshots/falke64 \
+  --snapshot runs/final-snapshots/adler40 --snapshot runs/final-snapshots/knecht24 \
+  --output runs/final-selection
+python -B ops/world_final_evaluate.py evaluate \
+  --roster runs/final-selection/roster.json \
+  --data data/conversation-world/dataset.json --output runs/final-evaluation
+```
+
+The primary and per-run winners come only from global champions, explicitly
+journaled pending candidates or the latest committed stage winner. Ranking uses
+the original recorded validation rule: zero observed false-memory claims first,
+then rollout score, whole-episode pass rate and lower unweighted reply loss.
+Exact ties use ascending checkpoint SHA256. The fixed validation protocol and
+corpus hashes must match. Orphan strategy files remain recovery evidence and
+cannot displace a primary candidate.
+
+The frozen comparison cohort contains the latest available fully completed,
+shared-initialization ordinary/evolution pair per run, where one exists. Record
+actual tokens, updates, validation calls and CPU/wall time; equal updates do not
+establish equal total computation. Retention and cross-stage winner inheritance
+prevent claims about independent pure evolutionary versus ordinary lineages.
+
+Final evaluation uses one CPU thread, seed 40097, greedy generation, 512 context
+tokens and at most 120 new tokens. It covers all 72 held-out episodes, plus a
+separate exhaustive unweighted reply-and-END NLL over all 256 target turns.
+Known regressions, raw free-conversation histories and independent name audits
+are separate outputs. TEST results never change the frozen selection. A failed
+evaluation directory is retained evidence, not an automatic resume input.
+No model is released automatically; heuristic scores and clean name audits
+alone do not demonstrate useful general conversation.
