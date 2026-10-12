@@ -76,6 +76,25 @@ def _safe(path):
     return no_links(path)
 
 
+def _publish_directory(source, destination):
+    """Atomically publish, tolerating bounded transient Windows file locks.
+
+    Virus scanners/indexers can briefly hold copied checkpoint files open. Never
+    fall back to a partial copy, replace an existing result, or retry forever.
+    """
+    source, destination = _safe(source), _safe(destination)
+    for attempt in range(50):
+        if destination.exists():
+            raise ValueError('publication output appeared; refusing overwrite')
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(.1)
+
+
 def _utc(value):
     stamp = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if stamp.tzinfo is None:
@@ -430,7 +449,7 @@ def freeze_selection(manifest_path, bundles, output, *, now=None):
         roster['roster_sha256'] = digest(roster)
         _write(published / 'roster.json', roster)
         _write(published / 'allocation-manifest.json', manifest)
-        os.replace(published, output)
+        _publish_directory(published, output)
     return output / 'roster.json'
 
 

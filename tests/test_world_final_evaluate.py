@@ -382,5 +382,48 @@ class FinalSelectionTests(unittest.TestCase):
                         self.assertAlmostEqual(nll['reply_loss'], math.log(259 + math.exp(4)) - 4 / 7, places=6)
 
 
+class PublicationTests(unittest.TestCase):
+    def test_transient_lock_retries_then_publishes_complete_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination = root / 'staged', root / 'published'
+            source.mkdir()
+            (source / 'seal.json').write_text('immutable evidence')
+            replace = final.os.replace
+            attempts = []
+            def locked_twice(src, dst):
+                attempts.append((src, dst))
+                if len(attempts) < 3:
+                    raise PermissionError('transient fixture lock')
+                replace(src, dst)
+            with patch.object(final.os, 'replace', side_effect=locked_twice), patch.object(final.time, 'sleep'):
+                final._publish_directory(source, destination)
+            self.assertEqual(len(attempts), 3)
+            self.assertFalse(source.exists())
+            self.assertEqual((destination / 'seal.json').read_text(), 'immutable evidence')
+
+    def test_existing_destination_is_never_replaced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination = root / 'staged', root / 'published'
+            source.mkdir()
+            destination.mkdir()
+            with patch.object(final.os, 'replace') as replace:
+                with self.assertRaisesRegex(ValueError, 'refusing overwrite'):
+                    final._publish_directory(source, destination)
+                replace.assert_not_called()
+
+    def test_permanent_lock_is_bounded_and_preserves_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'staged'
+            source.mkdir()
+            with patch.object(final.os, 'replace', side_effect=PermissionError('fixture')) as replace, patch.object(final.time, 'sleep'):
+                with self.assertRaises(PermissionError):
+                    final._publish_directory(source, root / 'published')
+            self.assertEqual(replace.call_count, 50)
+            self.assertTrue(source.is_dir())
+
+
 if __name__ == '__main__':
     unittest.main()
