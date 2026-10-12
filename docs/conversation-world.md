@@ -763,3 +763,81 @@ states, actual sampling/work counts and rejection decision are under
 `runs/user-recovery-pilot-20261012T0645/`. This small failed pilot does not establish
 that a larger curriculum would fail; it shows that this particular patch did not
 produce a reliable conversational improvement.
+
+## Final result: 12 October 2026
+
+The run ended at the authorized deadline. The 30 active workers' last recorded
+stage finishes were 07:59:30.245–07:59:34.846 UTC, before 10:00 Berlin. Captured
+systemd, cgroup and child-process checks confirm that all 35 recorded runs were
+stopped, including three suspended and two retired runs. No manual stop signals
+were necessary. Both user-requested interactive previews were excluded from
+training shutdown. The hourly review automation is now **PAUSED**.
+
+Persistent, per-file-verified snapshots contain 38,443 files and 70 retained full
+recovery states, totaling 4,344,477,168 archive bytes. Knecht's temporary checkout
+is no longer the only copy. The inventory records 2,206 absent historical pointers
+explicitly, mostly deliberately pruned warm seeds; it does not fabricate older
+models from their reports. All 2,232 owned-stage reports were available.
+
+Before opening TEST, selection was frozen across 35 runs and 164 distinct
+inspected checkpoints. The fixed roster contained 50 models: per-run winners plus
+eight available, fully completed ordinary/evolution pairs. An independent audit
+passed 1,240 selection/provenance checks. A transient Windows folder lock required
+a bounded publication retry; ranking and evaluation rules were unchanged.
+
+The validation-selected primary remains teacher checkpoint
+`11b4a35152f21ea31cb6a3c646308b7b4fd7e0fe4a65b13d9fef6a1b8a199a59`,
+the same model as the teacher preview. It has **800,535 parameters** and a
+**3,355,126-byte checkpoint (3.36 MB / 3.20 MiB)**. Its stored tensors are
+`float32`; this run did not deliver a ternary BitNet model.
+
+| Primary held-out measurement | Result |
+|---|---:|
+| Completely passed conversations | **0 / 72** |
+| Turns passing the heuristic reply rubric | 66 / 256 (25.78%) |
+| Equal-act average dialogue score | 0.33333 |
+| Unsupported-name audit flags | **22**, across 17 episodes |
+| Correct predicted meaning labels | 111 / 256 (43.36%) |
+| Memory-evidence contrast groups passed | 0 / 4 |
+| Latest-request contrast groups passed | 0 / 4 |
+| Exhaustive current-reply NLL | 0.320705 nats per byte/END token |
+
+All 76 name-handling targets and 40 presence targets failed their reply checks.
+For 54 turns, the predicted meaning was correct but the reply still failed. Manual
+inspection found malformed or irrelevant replies among some heuristic passes,
+so the turn-pass count overstates coherent conversation. Teacher-forced loss is
+not a substitute for relevant free-running replies. Known regressions were
+reported separately and never used to replace this result.
+
+All 50 predeclared models completed the same 72 TEST episodes, 256 target turns
+and exhaustive 256-target NLL evaluation. All 100 TEST/regression report-to-audit
+hash links were independently verified. No model was reselected from TEST scores.
+
+| Eight retained pairs: metric | Evolution wins | Ties | Ordinary wins |
+|---|---:|---:|---:|
+| Higher dialogue score | 4 | 0 | 4 |
+| Fewer independent name flags | 4 | 1 | 3 |
+| More complete conversations | 0 | 5 | 3 |
+| Lower reply NLL | 3 | 0 | 5 |
+
+Known-name recall scored zero for all 16 paired models. These pairs used 16,800
+updates and 256 validation calls per strategy in aggregate, but their sampled
+tokens and actual CPU/wall costs differ. They share ancestors and represent only
+retained checkpoints. They do **not** establish a consistent evolutionary
+advantage, independent statistical trials, or the stronger equal-computation
+claim. Across the full run, recorded optimizer updates totaled 1,425,224 for
+evolution and 1,423,833 for ordinary training. The approximately 1.148 billion
+reply-token exposures repeatedly reused the small corpus; they are not that much
+distinct language data.
+
+**The goal of reliable general chat was not achieved.** No final checkpoint was
+promoted, no rejected curriculum was adopted, and no training was extended beyond
+the deadline. Future work needs broader task dialogue and better use of the latest
+request and verified facts, assessed with a fresh evaluation protocol. The results
+above remain the final assessment of this run.
+
+Evidence: `runs/final-selection-20261012T0800/roster.json`,
+`runs/final-evaluation-20261012T0800/summary.json`, and the separate
+`-operations.json`, `-work-audit.json`, `-interpretation.json` and
+`-pair-analysis.json` files beside the evaluation directory. Original snapshots
+remain under `runs/final-snapshots-20261012T0800/`.
